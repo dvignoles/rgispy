@@ -1,6 +1,7 @@
 [run]
 source = rgispy
 omit = rgispy/__main__.py
+       rgispy/cmd/*
 
 [report]
 exclude_lines =

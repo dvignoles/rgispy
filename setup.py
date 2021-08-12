@@ -9,7 +9,7 @@ setup(
     author_email="dvignoles@gmail.com",
     license="MIT",
     packages=find_packages(),
-    install_requires=["numpy", "pandas", "xarray"],
+    install_requires=["numpy", "pandas", "xarray", "netcdf4"],
     python_requires=">=3.9",
     entry_points={
         "console_scripts": [

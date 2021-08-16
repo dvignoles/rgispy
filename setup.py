@@ -14,6 +14,7 @@ setup(
     entry_points={
         "console_scripts": [
             "sampleDs=rgispy.cmd.sampleds:main",
+            "gdbnToNetcdf=rgispy.cmd.gdbn_to_netcdf:main",
         ],
     },
 )

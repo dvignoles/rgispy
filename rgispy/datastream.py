@@ -100,7 +100,7 @@ def openDSbuffred(name, buffer_size, compressed=False):
     return ifile
 
 
-def headDS(ifile):
+def headDS(ifile, time_step):
 
     forty = ifile.read(40)
     dump40 = MFdsHeader.from_buffer_copy(forty)
@@ -113,9 +113,14 @@ def headDS(ifile):
 
     npType = _npType(Type)
 
-    # print(dump40.Date.decode())
+    if time_step == "daily":
+        date_format = "%Y-%m-%d"
+    elif time_step == "monthly":
+        date_format = "%Y-%m"
+    else:
+        date_format = "%Y"
 
-    Date = datetime.datetime.strptime(dump40.Date.decode(), "%Y-%m-%d")
+    Date = datetime.datetime.strptime(dump40.Date.decode(), date_format)
 
     Items = dump40.ItemNum
 
@@ -131,9 +136,18 @@ def recordDS(ifile, items, npType, skip=True):
     return RecordData
 
 
-# This is translation of the GDBC data type codes into standard
-# Numpy type codes
 def _npType(nType):
+    """Translate GDBC data type codes into standard numpy types
+
+    Args:
+        nType (int): gdbc data type code
+
+    Raises:
+        Exception: Unknown data type code
+
+    Returns:
+        (numpy type): np.int16, np.int32, np.float32, np.float64
+    """
     # nType values: 5=short,6=long,7=float,8=double
     if nType == 5:
         return np.int16
@@ -147,29 +161,41 @@ def _npType(nType):
         raise Exception("Unknown value format: type {}".format(nType))
 
 
-def nDays(year):
-    p = pd.Period("{}-01-01".format(year))
-    if p.is_leap_year:
-        days = 366
+def n_records(year, time_step):
+    """Get number of expected records in datastream based on time_step
+
+    Args:
+        year (int): year of datastream file
+        time_step (str): annual, monthly, or daily
+
+    Returns:
+        (int): number of records (ex: 365 for daily non-leap year datastream)
+    """
+    assert time_step in [
+        "annual",
+        "monthly",
+        "daily",
+    ], "time_step must be annual monthly or daily"
+
+    if time_step == "annual":
+        return 1
+    elif time_step == "monthly":
+        return 12
     else:
-        days = 365
-    return days
+        p = pd.Period("{}-01-01".format(year))
+        if p.is_leap_year:
+            days = 366
+        else:
+            days = 365
+        return days
 
 
-def sample_ds(mask_nc, datastream, mask_layers, output_dir, year, variable):
-
-    # set up masks
-    dsMasks = xa.open_dataset(mask_nc)
-    CellID = np.nan_to_num(dsMasks["ID"].data, copy=True, nan=0.0).astype("int32")
-    nRecords = nDays(year)
-
-    inFileID = datastream
-    rgisType, npType, NoData, Date, Cells = headDS(inFileID)
+def get_masks(mask_ds, mask_layers, output_dir, year, time_step):
 
     masks = []
     for m in mask_layers:
-        Mask = dsMasks[m].data
-        MaskType = dsMasks[m].attrs["Type"]
+        Mask = mask_ds[m].data
+        MaskType = mask_ds[m].attrs["Type"]
         MaskValues = Mask.flatten()
         MaskValues = MaskValues[~np.isnan(MaskValues)].astype("int")
         MaskValues = list(set(MaskValues))
@@ -177,25 +203,45 @@ def sample_ds(mask_nc, datastream, mask_layers, output_dir, year, variable):
         OutputPath = output_dir.joinpath(m)
         OutputPath.mkdir(exist_ok=True)
 
-        if MaskType == "Polygon":
-            dfOut = pd.DataFrame(index=MaskValues)
-        elif MaskType == "Point":
-            dfOut = pd.DataFrame(
-                index=MaskValues,
-                columns=pd.date_range(
-                    start="1/1/{}".format(year), end="1/08/{}".format(year), freq="D"
-                ),
+        if time_step == "daily":
+            date_cols = pd.date_range(
+                start="1/1/{}".format(year), end="12/31/{}".format(year), freq="D"
             )
+        elif time_step == "monthly":
+            date_cols = pd.date_range(
+                start="1/1/{}".format(year), end="12/31/{}".format(year), freq="MS"
+            )
+        else:
+            date_cols = pd.date_range(
+                start="1/1/{}".format(year), end="12/31/{}".format(year), freq="YS"
+            )
+
+        if MaskType == "Polygon":
+            dfOut = pd.DataFrame(index=MaskValues, columns=date_cols)
+        elif MaskType == "Point":
+            dfOut = pd.DataFrame(index=MaskValues, columns=date_cols)
 
         masks.append((m, Mask, MaskType, MaskValues, OutputPath, dfOut))
 
-    # bRecord = 40 + Cells * npType(1).itemsize
+        return masks
+
+
+def sample_ds(mask_nc, datastream, mask_layers, output_dir, year, variable, time_step):
+
+    # set up masks
+    mask_ds = xa.open_dataset(mask_nc)
+    CellID = np.nan_to_num(mask_ds["ID"].data, copy=True, nan=0.0).astype("int32")
+    nRecords = n_records(year, time_step)
+
+    inFileID = datastream
+    rgisType, npType, NoData, Date, Cells = headDS(inFileID, time_step)
+
+    masks = get_masks(mask_ds, mask_layers, output_dir, year, time_step)
+
     for day in range(0, nRecords):
-        # if day % 20 == 0:
-        #     print(day,end='')
         if day != 0:
-            dummy1, dummy1, dummy1, Date, dummy1 = headDS(inFileID)
-            # Data = recordDS(inFileID, Cells, npType)
+            dummy1, dummy1, dummy1, Date, dummy1 = headDS(inFileID, time_step)
+
         Data = recordDS(inFileID, Cells, npType, skip=False)
         # We add a NoData entry at the beginning of the data array, so that
         # ID = 0 (e.g. the NoData values of the rgis network) will map to NoData...
@@ -209,6 +255,8 @@ def sample_ds(mask_nc, datastream, mask_layers, output_dir, year, variable):
 
         for m, Mask, MaskType, MaskValues, OutputPath, dfOut in masks:
             if MaskType == "Polygon":
+                # TODO deal with polygon masks
+                pass
                 # For instance getting the mean of the variable for each
                 # region:
                 dfOut["mean_{}".format(Date.strftime("%Y-%m-%d"))] = [

@@ -22,6 +22,7 @@ def main():
 
     parser.add_argument("--year", nargs="?", help="Year of datastream file")
     parser.add_argument("--variable", nargs="?", help="Variable of datastream file")
+    parser.add_argument("--timestep", nargs="?", help="annual, monthly, or daily")
 
     args = parser.parse_args()
     sample_ds(
@@ -31,4 +32,5 @@ def main():
         args.outdir,
         args.year,
         args.variable,
+        args.timestep,
     )

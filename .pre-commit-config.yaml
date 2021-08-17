@@ -6,7 +6,7 @@ repos:
     name: isort
     stages: [commit]
     language: system
-    entry: pipenv run isort
+    entry: pipenv run isort --profile black
     types: [python]
 
   - id: black

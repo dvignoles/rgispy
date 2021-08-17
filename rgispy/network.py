@@ -1,15 +1,19 @@
 import datetime
 import os
+import subprocess as sp
 
 # Subprocess is used to spwan the call to the respective RGIS commands
-import subprocess as sp
 from io import StringIO
+from math import isnan
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import rasterio.crs as crs
 import rioxarray  # noqa
 import xarray as xa
+
+from .grid import non_nan_cells
 
 if "GHAASDIR" in os.environ:
     Dir2Ghaas = os.environ["GHAASDIR"]
@@ -197,3 +201,104 @@ def gdbn_to_netcdf(in_gdbn: Path, out_netcdf: Path, project=""):
     )
     # And we save the xarray dataset as a netCDF
     ds.to_netcdf(out_netcdf, encoding=OUT_ENCODING)
+
+
+def next_cell(cell_index, to_cell_code):
+    """Get index of next cell in network
+
+    Args:
+        cell_index (tuple): index of cell to get next_cell of
+        to_cell_code (int): ToCell encoding value representing direction of next cell
+
+    Returns:
+        tuple: index of next_cell in flow direction
+    """
+    assert to_cell_code in [
+        0,
+        1,
+        2,
+        4,
+        8,
+        16,
+        32,
+        64,
+        128,
+    ], "to cell must be valid direction encoding"
+    # cell_index = (lat, lon)
+    # No Flow
+    if to_cell_code == 0:
+        return None
+    # East
+    elif to_cell_code == 1:
+        return (cell_index[0], cell_index[1] + 1)
+    # SE
+    elif to_cell_code == 2:
+        return (cell_index[0] - 1, cell_index[1] + 1)
+    # S
+    elif to_cell_code == 4:
+        return (cell_index[0] - 1, cell_index[1])
+    # SW
+    elif to_cell_code == 8:
+        return (cell_index[0] - 1, cell_index[1] - 1)
+    # W
+    elif to_cell_code == 16:
+        return (cell_index[0], cell_index[1] - 1)
+    # NW
+    elif to_cell_code == 32:
+        return (cell_index[0] + 1, cell_index[1] - 1)
+    # N
+    elif to_cell_code == 64:
+        return (cell_index[0] + 1, cell_index[1])
+    # NE
+    elif to_cell_code == 128:
+        return (cell_index[0] + 1, cell_index[1] + 1)
+
+
+def get_basin_mouth(network, cell_idx):
+    """Get the mouth of the basin for a particular network cell by recursing through network.
+
+    Args:
+        network (xr.core.dataset.Dataset): xarray Dataset of network created via this module
+        cell_idx (tuple): tuple representing index of cell to find basin mouth of
+
+    Returns:
+        (tuple): (basinid, cell_idx) tuple of basinid and the terminal mouth cell_idx
+    """
+    basin = network["BasinID"][cell_idx].data.tolist()
+    tocell = int(network["ToCell"][cell_idx].data.tolist())
+    next_cell_idx = next_cell(cell_idx, tocell)
+
+    next_cell_id = network["ID"][next_cell_idx].data.tolist()
+    next_cell_basin = network["BasinID"][next_cell_idx].data.tolist()
+
+    if next_cell_basin == basin and not isnan(next_cell_id):
+        return get_basin_mouth(network, next_cell_idx)
+    else:
+        return basin, cell_idx
+
+
+def get_all_basin_mouth(network):
+    """Get list of all basin mouths for network
+
+    Args:
+        network (xr.core.dataset.Dataset): xarray Dataset of network created via this module
+
+    Returns:
+        (list): list of tuples of form (basinid, cell_idx)
+    """
+    all_valid_starts = non_nan_cells(network["ID"].data)
+    unique_basins = set(np.unique(network["BasinID"]))
+
+    basin_mouths = []
+    for cell_idx in all_valid_starts:
+
+        # we're done if the only unique basin is "nan"
+        if len(unique_basins) > 1:
+            basinid = network["BasinID"][cell_idx].data.tolist()
+
+            # avoid duplicating efforts for same basin cells
+            if basinid in unique_basins:
+                basin_mouths.append(get_basin_mouth(network, cell_idx))
+                unique_basins.remove(basinid)
+        else:
+            return basin_mouths

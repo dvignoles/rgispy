@@ -1,6 +1,17 @@
 # rgispy
 
-## Setup
+## Installation
+python 3.9 required
+```sh
+pip install git+git://github.com/dvignoles/rgispy@main
+```
+
+## Console Scripts
+* sampleDs
+* gdbnToNetcdf
+* sampleGdbc
+
+## Developer Setup
 ```sh
 # Install dependencies
 pipenv install --dev

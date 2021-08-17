@@ -1,5 +1,6 @@
 import datetime
 import gzip
+import subprocess as sp
 from ctypes import Structure, Union, c_char, c_double, c_int, c_short
 
 import numpy as np
@@ -188,6 +189,24 @@ def n_records(year, time_step):
         else:
             days = 365
         return days
+
+
+def gdbc_to_ds_buffer(gdbc, network):
+    """Get buffered fileobject of datastream from gdbc using network gdbn as template via rgis2ds command
+
+    Args:
+        gdbc (Path): gdbc file path
+        network (Path): gdbn file path
+
+    Returns:
+        (io.BufferedReader): buffered reader of output datastream
+    """
+    cmd = "rgis2ds --template {network} {gdbc}".format(
+        network=network, gdbc=gdbc
+    ).split()
+    p = sp.Popen(cmd, stdout=sp.PIPE)
+
+    return p.stdout
 
 
 def get_masks(mask_ds, mask_layers, output_dir, year, time_step):

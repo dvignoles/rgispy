@@ -15,6 +15,7 @@ setup(
         "console_scripts": [
             "sampleDs=rgispy.cmd.sampleds:main",
             "gdbnToNetcdf=rgispy.cmd.gdbn_to_netcdf:main",
+            "sampleGdbc=rgispy.cmd.sample_gdbc:main",
         ],
     },
 )

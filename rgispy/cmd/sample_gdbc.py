@@ -1,14 +1,19 @@
 import argparse
-import sys
 from pathlib import Path
 
-from ..sample import sample_ds
+from ..sample import gdbc_to_ds_buffer, sample_ds
 
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("gdbc", nargs="?", type=Path, help="rgis gdbc grid file")
     parser.add_argument(
-        "datastream", nargs="?", type=argparse.FileType("rb"), default=sys.stdin.buffer
+        "--network",
+        "-n",
+        nargs="?",
+        type=Path,
+        help="rgis gdbn network corresponding to gdbc",
+        required=True,
     )
     parser.add_argument(
         "--mask_nc", "-m", nargs="?", type=Path, help="netcdf mask file", required=True
@@ -31,9 +36,11 @@ def main():
         "--timestep", "-t", nargs="?", help="annual, monthly, or daily", required=False
     )
     args = parser.parse_args()
+
+    datastream = gdbc_to_ds_buffer(args.gdbc, args.network)
     sample_ds(
         args.mask_nc,
-        args.datastream,
+        datastream,
         args.mask_layers,
         args.outdir,
         args.year,

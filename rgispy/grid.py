@@ -30,3 +30,15 @@ def get_non_nan_cells(data_array: xr.core.dataarray.DataArray):
     indices = non_nan_cells(data_array.data)
     for idx in indices:
         yield data_array[idx]
+
+
+def count_non_nan(data):
+    """Count number of non nan cells in numpy matrix
+
+    Args:
+        data (np.ndarray): numpy array
+
+    Returns:
+        (int): count of cells which are not nan
+    """
+    return np.count_nonzero(~np.isnan(data))

@@ -1,8 +1,11 @@
 import datetime
 import gzip
 import subprocess as sp
-from ctypes import Structure, Union, c_char, c_double, c_int, c_short
+from ctypes import Structure
+from ctypes import Union as c_Union
+from ctypes import c_char, c_double, c_int, c_short
 from pathlib import Path
+from typing import BinaryIO, List, Union
 
 import numpy as np
 import pandas as pd
@@ -72,7 +75,7 @@ OutEncoding = {
 # and are used to parse the GDBC file header
 
 
-class MFmissing(Union):
+class MFmissing(c_Union):
     _fields_ = [("Int", c_int), ("Float", c_double)]
 
 
@@ -157,6 +160,8 @@ def n_records(year, time_step):
     Returns:
         (int): number of records (ex: 365 for daily non-leap year datastream)
     """
+
+    time_step = time_step.lower()
     assert time_step in [
         "annual",
         "monthly",
@@ -287,7 +292,15 @@ def get_masks(mask_ds, mask_layers, output_dir, year, time_step):
         return masks
 
 
-def sample_ds(mask_nc, file_in, mask_layers, output_dir, year, variable, time_step):
+def sample_ds(
+    mask_nc: Path,
+    file_in: Union[BinaryIO, Path],
+    mask_layers: List[str],
+    output_dir: Path,
+    year: int,
+    variable: str,
+    time_step: str,
+) -> None:
 
     # set up masks
     mask_ds = xa.open_dataset(mask_nc)
@@ -341,5 +354,7 @@ def sample_ds(mask_nc, file_in, mask_layers, output_dir, year, variable, time_st
 def sample_gdbc(
     mask_nc, file_path, network, mask_layers, output_dir, year, variable, time_step
 ):
+
+    assert "gdbn" in network.name.split(".", 1)[-1], "Network must be gdbn"
     ds = gdbc_to_ds_buffer(file_path, network)
     sample_ds(mask_nc, ds, mask_layers, output_dir, year, variable, time_step)

@@ -1,5 +1,4 @@
 import argparse
-import gzip
 import sys
 from pathlib import Path
 
@@ -40,27 +39,9 @@ def main():
         "--timestep", "-t", nargs="?", help="annual, monthly, or daily", required=True
     )
     args = parser.parse_args()
-
-    # deal with gzip compressed and stdin variations
-    datastream_name = args.datastream.name
-    if datastream_name != "<stdin>":
-        extension = datastream_name.split(".")[-1]
-        assert extension in [
-            "gz",
-            "gds",
-            "ds",
-        ], "extension must be either gz or gds or ds"
-        if extension == "gz":
-            datastream = gzip.open(datastream_name)
-            args.datastream.close()
-        elif extension in ["gds", "ds"]:
-            datastream = args.datastream
-    else:
-        datastream = args.datastream
-
     sample_ds(
         args.mask_nc,
-        datastream,
+        args.datastream,
         args.mask_layers,
         args.outdir,
         args.year,

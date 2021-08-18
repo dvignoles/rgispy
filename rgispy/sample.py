@@ -1,6 +1,8 @@
 import datetime
+import gzip
 import subprocess as sp
 from ctypes import Structure, Union, c_char, c_double, c_int, c_short
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -192,6 +194,57 @@ def gdbc_to_ds_buffer(gdbc, network):
     return p.stdout
 
 
+def get_true_datastream(file_in):
+    """Get file descriptor of either datastream (gds) gzip compressed datastream (gz) or stdin buffer
+
+    Args:
+        file_in (file like): either file like object or path like
+
+    Returns:
+        (file object): either file_in or gzip reader
+    """
+
+    def _is_compressed(file_name):
+        extension = file_name.split(".", 1)[-1]
+        assert extension in [
+            "gds.gz",
+            "ds.gz",
+            "gds",
+            "ds",
+        ], "extension must be either gz or gds or ds"
+        if extension in ["gds.gz", "ds.gz"]:
+            return True
+        elif extension in ["gds", "ds"]:
+            return False
+
+    try:
+        # if str or Path object this will work
+        file_in = Path(file_in).resolve()
+        if _is_compressed(file_in.name):
+            return gzip.open(file_in)
+        else:
+            return open(file_in, "rb")
+    except TypeError:
+        # File object
+        datastream_path = file_in.name
+        if datastream_path != "<stdin>":
+            datastream_name = Path(datastream_path).name
+            if _is_compressed(datastream_name):
+                datastream = gzip.open(datastream_name)
+                file_in.close()
+                return datastream
+            else:
+                return file_in
+        else:
+            # return stdin ensuring it is binary buffer
+            try:
+                file_buf = file_in.buffer
+                return file_buf
+            except AttributeError:
+                # already a buffer
+                return file_in
+
+
 def get_masks(mask_ds, mask_layers, output_dir, year, time_step):
 
     masks = []
@@ -228,14 +281,14 @@ def get_masks(mask_ds, mask_layers, output_dir, year, time_step):
         return masks
 
 
-def sample_ds(mask_nc, datastream, mask_layers, output_dir, year, variable, time_step):
+def sample_ds(mask_nc, file_in, mask_layers, output_dir, year, variable, time_step):
 
     # set up masks
     mask_ds = xa.open_dataset(mask_nc)
     CellID = np.nan_to_num(mask_ds["ID"].data, copy=True, nan=0.0).astype("int32")
     nRecords = n_records(year, time_step)
 
-    inFileID = datastream
+    inFileID = get_true_datastream(file_in)
     rgisType, npType, NoData, Date, Cells = headDS(inFileID, time_step)
 
     masks = get_masks(mask_ds, mask_layers, output_dir, year, time_step)

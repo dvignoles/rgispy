@@ -1,5 +1,4 @@
 import datetime
-import gzip
 import subprocess as sp
 from ctypes import Structure, Union, c_char, c_double, c_int, c_short
 
@@ -83,22 +82,6 @@ class MFdsHeader(Structure):
         ("Missing", MFmissing),
         ("Date", c_char * 24),
     ]
-
-
-def openDS(name, compressed=False):
-    if compressed:
-        ifile = gzip.open(name, "rb")  # as ifile
-    else:
-        ifile = open(name, "rb")  # as ifile:
-    return ifile
-
-
-def openDSbuffred(name, buffer_size, compressed=False):
-    if compressed:
-        ifile = gzip.open(name, "rb")  # as ifile
-    else:
-        ifile = open(name, "rb", buffer=buffer_size)  # as ifile:
-    return ifile
 
 
 def headDS(ifile, time_step):

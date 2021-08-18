@@ -24,16 +24,24 @@ def main():
         nargs="+",
         default=[],
         help="Which mask layers to sample by",
+        required=True,
     )
     parser.add_argument(
-        "--outdir", "-d", nargs="?", type=Path, help="Directory to output to"
+        "--outdir",
+        "-d",
+        nargs="?",
+        type=Path,
+        help="Directory to output to",
+        required=True,
     )
-    parser.add_argument("--year", "-y", nargs="?", help="Year of datastream file")
     parser.add_argument(
-        "--variable", "-v", nargs="?", help="Variable of datastream file"
+        "--year", "-y", nargs="?", help="Year of datastream file", required=True
     )
     parser.add_argument(
-        "--timestep", "-t", nargs="?", help="annual, monthly, or daily", required=False
+        "--variable", "-v", nargs="?", help="Variable of datastream file", required=True
+    )
+    parser.add_argument(
+        "--timestep", "-t", nargs="?", help="annual, monthly, or daily", required=True
     )
     args = parser.parse_args()
 

@@ -195,7 +195,7 @@ def gdbc_to_ds_buffer(gdbc, network):
 
 
 def get_true_datastream(file_in):
-    """Get file descriptor of either datastream (gds) gzip compressed datastream (gz) or stdin buffer
+    """Get file descriptor of either datastream (gds) gzip compressed datastream (gz) or stdin buffer or rgis2ds stdout
 
     Args:
         file_in (file like): either file like object or path like
@@ -227,8 +227,14 @@ def get_true_datastream(file_in):
     except TypeError:
         # File object
         datastream_path = file_in.name
+
         if datastream_path != "<stdin>":
-            datastream_name = Path(datastream_path).name
+            # case when not stdin but not named file
+            try:
+                datastream_name = Path(datastream_path).name
+            except TypeError:
+                return file_in
+
             if _is_compressed(datastream_name):
                 datastream = gzip.open(datastream_name)
                 file_in.close()
@@ -330,3 +336,10 @@ def sample_ds(mask_nc, file_in, mask_layers, output_dir, year, variable, time_st
 
     for m, _, _, _, OutputPath, dfOut in masks:
         dfOut.to_csv(OutputPath.joinpath("{}_{}.csv".format(variable, year)))
+
+
+def sample_gdbc(
+    mask_nc, file_path, network, mask_layers, output_dir, year, variable, time_step
+):
+    ds = gdbc_to_ds_buffer(file_path, network)
+    sample_ds(mask_nc, ds, mask_layers, output_dir, year, variable, time_step)

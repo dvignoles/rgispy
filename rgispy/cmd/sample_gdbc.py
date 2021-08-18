@@ -1,7 +1,7 @@
 import argparse
 from pathlib import Path
 
-from ..sample import gdbc_to_ds_buffer, sample_ds
+from ..sample import sample_gdbc
 
 
 def main():
@@ -45,10 +45,10 @@ def main():
     )
     args = parser.parse_args()
 
-    datastream = gdbc_to_ds_buffer(args.gdbc, args.network)
-    sample_ds(
+    sample_gdbc(
         args.mask_nc,
-        datastream,
+        args.gdbc,
+        args.network,
         args.mask_layers,
         args.outdir,
         args.year,

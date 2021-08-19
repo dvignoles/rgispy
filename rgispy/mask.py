@@ -1,11 +1,23 @@
 import datetime
 
 import numpy as np
+from xarray.core.dataarray import DataArray as xarray_da
+
+# Type Hints
+from xarray.core.dataset import Dataset as xarray_ds
 
 from .network import get_all_basin_mouth
 
 
-def get_basin_mouth_mask(network):
+def get_basin_mouth_mask(network: xarray_ds) -> xarray_da:
+    """From a given rgispy network, generate a mask of all the basin mouth cells
+
+    Args:
+        network (xarray DataSet): network with ID DataArray
+
+    Returns:
+        xarray DataArray: mask DataArray of basin mouths
+    """
     basin_mouths = get_all_basin_mouth(network)
 
     mask = network["ID"].copy().rename("BasinMouth")
@@ -18,14 +30,14 @@ def get_basin_mouth_mask(network):
     return mask
 
 
-def get_mask_ds(network):
+def get_mask_ds(network: xarray_ds) -> xarray_ds:
     """Get a xarray dataset skeleton for setting mask variables to
 
     Args:
-        network (xarray.core.dataset.Dataset): xarray Dataset of network
+        network (xarray Dataset): xarray Dataset of network
 
     Returns:
-        (xarray.core.dataset.Dataset): xarray Dataset with appropriate skeleton for given network
+        xarray Dataset: xarray Dataset with appropriate skeleton for given network
     """
     todrop = list(network.data_vars.keys())
     if "spatial_ref" in todrop:

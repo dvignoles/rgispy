@@ -1,17 +1,19 @@
 import datetime
 import os
 import subprocess as sp
-
-# Subprocess is used to spwan the call to the respective RGIS commands
 from io import StringIO
 from math import isnan
 from pathlib import Path
+from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
 import rasterio.crs as crs
 import rioxarray  # noqa
 import xarray as xa
+
+# Type Hints
+from xarray.core.dataset import Dataset as xarray_ds
 
 from .grid import non_nan_cells
 
@@ -104,8 +106,17 @@ def LoadDBCells(in_gdbn):
     return df_out
 
 
-def gdbn_to_netcdf(in_gdbn: Path, out_netcdf: Path, project=""):
+def gdbn_to_netcdf(in_gdbn: Path, out_netcdf: Path, project: str = "") -> Path:
 
+    """Convert .gdbn rgis network to netcdf network compatible with rgispy
+
+    Raises:
+        Exception: unable to encode maximum value
+        Exception: unable to encode maximum value
+
+    Returns:
+        Path: Path to created netcdf network
+    """
     # We define the CRS for the output NetCDF
     wkt = 'GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563,AUTHORITY["EPSG","7030"]],AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.01745329251994328,AUTHORITY["EPSG","9122"]],AUTHORITY["EPSG","4326"]]'
     crs4326 = crs.CRS.from_wkt(wkt)
@@ -201,9 +212,10 @@ def gdbn_to_netcdf(in_gdbn: Path, out_netcdf: Path, project=""):
     )
     # And we save the xarray dataset as a netCDF
     ds.to_netcdf(out_netcdf, encoding=OUT_ENCODING)
+    return out_netcdf
 
 
-def next_cell(cell_index, to_cell_code):
+def next_cell(cell_index: tuple, to_cell_code: int) -> Optional[tuple[int, int]]:
     """Get index of next cell in network
 
     Args:
@@ -252,13 +264,15 @@ def next_cell(cell_index, to_cell_code):
     # NE
     elif to_cell_code == 128:
         return (cell_index[0] + 1, cell_index[1] + 1)
+    else:
+        return None
 
 
-def get_basin_mouth(network, cell_idx):
+def get_basin_mouth(network: xarray_ds, cell_idx: tuple) -> tuple[Any, tuple[Any, ...]]:
     """Get the mouth of the basin for a particular network cell by recursing through network.
 
     Args:
-        network (xr.core.dataset.Dataset): xarray Dataset of network created via this module
+        network (xarray Dataset): xarray Dataset of network created via this module
         cell_idx (tuple): tuple representing index of cell to find basin mouth of
 
     Returns:
@@ -272,22 +286,23 @@ def get_basin_mouth(network, cell_idx):
     next_cell_basin = network["BasinID"][next_cell_idx].data.tolist()
 
     if next_cell_basin == basin and not isnan(next_cell_id):
-        return get_basin_mouth(network, next_cell_idx)
+        return get_basin_mouth(network, next_cell_idx)  # type: ignore
     else:
         return basin, cell_idx
 
 
-def get_all_basin_mouth(network):
+def get_all_basin_mouth(network: xarray_ds) -> list[tuple[Any, tuple[Any, ...]]]:  # type: ignore[return]
     """Get list of all basin mouths for network
 
     Args:
-        network (xr.core.dataset.Dataset): xarray Dataset of network created via this module
+        network (xarray Dataset): xarray Dataset of network created via this module
 
     Returns:
-        (list): list of tuples of form (basinid, cell_idx)
+        List[tuple]: list of tuples of form (basinid, cell_idx)
     """
     all_valid_starts = non_nan_cells(network["ID"].data)
     unique_basins = set(np.unique(network["BasinID"]))
+    assert len(unique_basins) > 1, "must have at least 1 non-nan basin"
 
     basin_mouths = []
     for cell_idx in all_valid_starts:

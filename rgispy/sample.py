@@ -302,6 +302,18 @@ def sample_ds(
     time_step: str,
 ) -> None:
 
+    """Sample a datastream using a netcdf mask
+
+    Args:
+        mask_nc (Path): netcdf mask file
+        file_in (Union[BinaryIO, Path]): datastream file object or pathlike
+        mask_layers (List[str]): list of masks from mask_nc to sample with
+        output_dir (Path): directory of output
+        year (int): year of datastream file
+        variable (str): variable of datastream file (ie. Discharge, Temperature..)
+        time_step (str): annual, monthly, or daily
+    """
+
     # set up masks
     mask_ds = xa.open_dataset(mask_nc)
     CellID = np.nan_to_num(mask_ds["ID"].data, copy=True, nan=0.0).astype("int32")
@@ -352,8 +364,28 @@ def sample_ds(
 
 
 def sample_gdbc(
-    mask_nc, file_path, network, mask_layers, output_dir, year, variable, time_step
-):
+    mask_nc: Path,
+    file_path: Path,
+    network: Path,
+    mask_layers: List[str],
+    output_dir: Path,
+    year: int,
+    variable: str,
+    time_step: str,
+) -> None:
+
+    """Sample a gdbc rgis grid using a netcdf mask
+
+    Args:
+        mask_nc (Path): netcdf mask file
+        file_in (Path]): .gdbc or gdbc.gz path
+        network (Path): gdbn rgis network
+        mask_layers (List[str]): list of masks from mask_nc to sample with
+        output_dir (Path): directory of output
+        year (int): year of datastream file
+        variable (str): variable of datastream file (ie. Discharge, Temperature..)
+        time_step (str): annual, monthly, or daily
+    """
 
     assert "gdbn" in network.name.split(".", 1)[-1], "Network must be gdbn"
     ds = gdbc_to_ds_buffer(file_path, network)

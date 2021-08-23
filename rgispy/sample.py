@@ -273,8 +273,8 @@ def get_masks(mask_ds, mask_layers, output_dir, year, time_step):
         MaskValues = MaskValues[~np.isnan(MaskValues)].astype("int")
         MaskValues = list(set(MaskValues))
 
-        OutputPath = output_dir.joinpath(m)
-        OutputPath.mkdir(exist_ok=True)
+        OutputPath = output_dir.joinpath(m, time_step.capitalize())
+        OutputPath.mkdir(exist_ok=True, parents=True)
 
         if time_step == "daily":
             date_cols = pd.date_range(

@@ -296,7 +296,7 @@ def get_masks(mask_ds, mask_layers, output_dir, year, time_step):
 
         masks.append((m, Mask, MaskType, MaskValues, OutputPath, dfOut))
 
-        return masks
+    return masks
 
 
 def sample_ds(

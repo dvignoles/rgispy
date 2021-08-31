@@ -5,7 +5,7 @@ from ctypes import Structure
 from ctypes import Union as c_Union
 from ctypes import c_char, c_double, c_int, c_short
 from pathlib import Path
-from typing import BinaryIO, List, Union
+from typing import BinaryIO, Generator, List, Union
 
 import numpy as np
 import pandas as pd
@@ -292,6 +292,41 @@ def get_masks(mask_ds, mask_layers, output_dir, year, time_step):
         return masks
 
 
+def iter_ds(
+    file_buf: BinaryIO, mask_id: np.ndarray, year: int, time_step: str
+) -> Generator[tuple[np.ndarray, datetime.datetime], None, None]:
+    """Generator of (ndarray, datetime) record tuples over datastream file object
+
+    Args:
+        file_buf (BinaryIO): file object of datastream file (output from get_true_datastream)
+        mask_id (np.ndarray): mask['ID'].data from mask xarray
+        year (int): year of datastream
+        time_step (str): annual, monthly, or daily
+
+    Yields:
+        Generator[tuple[np.ndarray, datetime.datetime]]: (data, datetime) record pairs
+    """
+    cell_id = np.nan_to_num(mask_id, copy=True, nan=0.0).astype("int32")
+    nRecords = n_records(year, time_step)
+
+    rgisType, npType, NoData, Date, Cells = headDS(file_buf, time_step)
+
+    for day in range(0, nRecords):
+        if day != 0:
+            _, _, _, Date, _ = headDS(file_buf, time_step)
+
+        Data = recordDS(file_buf, Cells, npType, skip=False)
+        # We add a NoData entry at the beginning of the data array, so that
+        # ID = 0 (e.g. the NoData values of the rgis network) will map to NoData...
+        Data = np.insert(Data, 0, NoData)
+        Data = Data[cell_id.flatten()].reshape(cell_id.shape)
+        if rgisType <= 6:
+            _ = Data.astype("float")
+        Data[Data == NoData] = np.nan
+
+        yield Data, Date
+
+
 def sample_ds(
     mask_nc: Path,
     file_in: Union[BinaryIO, Path],
@@ -302,31 +337,14 @@ def sample_ds(
     time_step: str,
 ) -> None:
 
+    file_buf = get_true_datastream(file_in)
+
     # set up masks
     mask_ds = xa.open_dataset(mask_nc)
-    CellID = np.nan_to_num(mask_ds["ID"].data, copy=True, nan=0.0).astype("int32")
-    nRecords = n_records(year, time_step)
-
-    inFileID = get_true_datastream(file_in)
-    rgisType, npType, NoData, Date, Cells = headDS(inFileID, time_step)
-
     masks = get_masks(mask_ds, mask_layers, output_dir, year, time_step)
 
-    for day in range(0, nRecords):
-        if day != 0:
-            dummy1, dummy1, dummy1, Date, dummy1 = headDS(inFileID, time_step)
-
-        Data = recordDS(inFileID, Cells, npType, skip=False)
-        # We add a NoData entry at the beginning of the data array, so that
-        # ID = 0 (e.g. the NoData values of the rgis network) will map to NoData...
-        Data = np.insert(Data, 0, NoData)
-        Data = Data[CellID.flatten()].reshape(CellID.shape)
-        if rgisType <= 6:
-            _ = Data.astype("float")
-        Data[Data == NoData] = np.nan
-        # And now we can calculate the statistics for this layer (one day) and add it to the
-        # output dataframe as an additional column...
-
+    for Data, Date in iter_ds(file_buf, mask_ds["ID"].data, year, time_step):
+        # each loop is one day in the case of daily time_step
         for m, Mask, MaskType, MaskValues, OutputPath, dfOut in masks:
             if MaskType == "Polygon":
                 # TODO deal with polygon masks

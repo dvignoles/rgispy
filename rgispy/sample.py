@@ -4,8 +4,11 @@ import subprocess as sp
 from ctypes import Structure
 from ctypes import Union as c_Union
 from ctypes import c_char, c_double, c_int, c_short
+from os import PathLike
 from pathlib import Path
-from typing import BinaryIO, Generator, List, Union
+
+# typing hints
+from typing import IO, BinaryIO, Generator, List, Optional, Union, no_type_check
 
 import numpy as np
 import pandas as pd
@@ -125,7 +128,7 @@ def recordDS(ifile, items, npType, skip=True):
     return RecordData
 
 
-def _npType(nType):
+def _npType(nType: int) -> type:
     """Translate GDBC data type codes into standard numpy types
 
     Args:
@@ -150,7 +153,7 @@ def _npType(nType):
         raise Exception("Unknown value format: type {}".format(nType))
 
 
-def n_records(year, time_step):
+def n_records(year: int, time_step: str) -> int:
     """Get number of expected records in datastream based on time_step
 
     Args:
@@ -158,7 +161,7 @@ def n_records(year, time_step):
         time_step (str): annual, monthly, or daily
 
     Returns:
-        (int): number of records (ex: 365 for daily non-leap year datastream)
+        int: number of records (ex: 365 for daily non-leap year datastream)
     """
 
     time_step = time_step.lower()
@@ -181,7 +184,7 @@ def n_records(year, time_step):
         return days
 
 
-def gdbc_to_ds_buffer(gdbc, network):
+def gdbc_to_ds_buffer(gdbc: Path, network: Path) -> Optional[IO[bytes]]:
     """Get buffered fileobject of datastream from gdbc using network gdbn as template via rgis2ds command
 
     Args:
@@ -189,7 +192,7 @@ def gdbc_to_ds_buffer(gdbc, network):
         network (Path): gdbn file path
 
     Returns:
-        (io.BufferedReader): buffered reader of output datastream
+        BinaryIO: buffered reader of output datastream
     """
     cmd = "rgis2ds --template {network} {gdbc}".format(
         network=network, gdbc=gdbc
@@ -199,14 +202,18 @@ def gdbc_to_ds_buffer(gdbc, network):
     return p.stdout
 
 
-def get_true_datastream(file_in):
+# type checking kind of a mess with this function, it's handled by try/except
+@no_type_check
+def get_true_datastream(
+    file_in: Union[BinaryIO, PathLike[str]]
+) -> Union[BinaryIO, gzip.GzipFile]:
     """Get file descriptor of either datastream (gds) gzip compressed datastream (gz) or stdin buffer or rgis2ds stdout
 
     Args:
         file_in (file like): either file like object or path like
 
     Returns:
-        (file object): either file_in or gzip reader
+       BinaryIO: either file_in or gzip reader
     """
 
     def _is_compressed(file_name):
@@ -266,8 +273,8 @@ def get_masks(mask_ds, mask_layers, output_dir, year, time_step):
         MaskValues = MaskValues[~np.isnan(MaskValues)].astype("int")
         MaskValues = list(set(MaskValues))
 
-        OutputPath = output_dir.joinpath(m)
-        OutputPath.mkdir(exist_ok=True)
+        OutputPath = output_dir.joinpath(m, time_step.capitalize())
+        OutputPath.mkdir(exist_ok=True, parents=True)
 
         if time_step == "daily":
             date_cols = pd.date_range(
@@ -289,7 +296,7 @@ def get_masks(mask_ds, mask_layers, output_dir, year, time_step):
 
         masks.append((m, Mask, MaskType, MaskValues, OutputPath, dfOut))
 
-        return masks
+    return masks
 
 
 def iter_ds(
@@ -302,7 +309,6 @@ def iter_ds(
         mask_id (np.ndarray): mask['ID'].data from mask xarray
         year (int): year of datastream
         time_step (str): annual, monthly, or daily
-
     Yields:
         Generator[tuple[np.ndarray, datetime.datetime]]: (data, datetime) record pairs
     """
@@ -329,13 +335,28 @@ def iter_ds(
 
 def sample_ds(
     mask_nc: Path,
-    file_in: Union[BinaryIO, Path],
+    file_in: Union[
+        BinaryIO,
+        Path,
+    ],
     mask_layers: List[str],
     output_dir: Path,
     year: int,
     variable: str,
     time_step: str,
 ) -> None:
+
+    """Sample a datastream using a netcdf mask
+
+    Args:
+        mask_nc (Path): netcdf mask file
+        file_in (Union[BinaryIO, Path]): datastream file object or pathlike
+        mask_layers (List[str]): list of masks from mask_nc to sample with
+        output_dir (Path): directory of output
+        year (int): year of datastream file
+        variable (str): variable of datastream file (ie. Discharge, Temperature..)
+        time_step (str): annual, monthly, or daily
+    """
 
     file_buf = get_true_datastream(file_in)
 
@@ -370,9 +391,29 @@ def sample_ds(
 
 
 def sample_gdbc(
-    mask_nc, file_path, network, mask_layers, output_dir, year, variable, time_step
-):
+    mask_nc: Path,
+    file_path: Path,
+    network: Path,
+    mask_layers: List[str],
+    output_dir: Path,
+    year: int,
+    variable: str,
+    time_step: str,
+) -> None:
+
+    """Sample a gdbc rgis grid using a netcdf mask
+
+    Args:
+        mask_nc (Path): netcdf mask file
+        file_in (Path]): .gdbc or gdbc.gz path
+        network (Path): gdbn rgis network
+        mask_layers (List[str]): list of masks from mask_nc to sample with
+        output_dir (Path): directory of output
+        year (int): year of datastream file
+        variable (str): variable of datastream file (ie. Discharge, Temperature..)
+        time_step (str): annual, monthly, or daily
+    """
 
     assert "gdbn" in network.name.split(".", 1)[-1], "Network must be gdbn"
     ds = gdbc_to_ds_buffer(file_path, network)
-    sample_ds(mask_nc, ds, mask_layers, output_dir, year, variable, time_step)
+    sample_ds(mask_nc, ds, mask_layers, output_dir, year, variable, time_step)  # type: ignore

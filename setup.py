@@ -9,7 +9,16 @@ setup(
     author_email="dvignoles@gmail.com",
     license="MIT",
     packages=find_packages(),
-    install_requires=["numpy", "pandas", "xarray", "netcdf4"],
+    install_requires=[
+        "numpy",
+        "pandas",
+        "xarray",
+        "netcdf4",
+        "geopandas",
+        "sqlalchemy",
+        "geoalchemy2",
+        "psycopg2",
+    ],
     python_requires=">=3.9",
     entry_points={
         "console_scripts": [

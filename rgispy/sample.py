@@ -333,6 +333,28 @@ def iter_ds(
         yield Data, Date
 
 
+def iter_gdbc(
+    gdbc: Path, network: Path, mask_id: np.ndarray, year: int, time_step: str
+) -> Generator[tuple[np.ndarray, datetime.datetime], None, None]:
+    """Wrapper of iter_ds for gdbc via rgis2ds
+
+    Args:
+        gdbc (Path): gdbc file path
+        network (Path): gdbn file path
+        mask_id (np.ndarray): mask['ID'].data from mask xarray
+        year (int): year of datastream
+        time_step (str): annual, monthly, or daily
+    Yields:
+        Generator[tuple[np.ndarray, datetime.datetime]]: (data, datetime) record pairs
+    """
+    file_buf = gdbc_to_ds_buffer(gdbc, network)
+    try:
+        for data, date in iter_ds(file_buf, mask_id, year, time_step):  # type: ignore
+            yield data, date
+    except GeneratorExit:
+        file_buf.close()  # type: ignore
+
+
 def sample_ds(
     mask_nc: Path,
     file_in: Union[

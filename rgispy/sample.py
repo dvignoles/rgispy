@@ -105,14 +105,22 @@ def headDS(ifile, time_step):
 
     npType = _npType(Type)
 
+    date_raw = dump40.Date.decode()
     if time_step == "daily":
         date_format = "%Y-%m-%d"
     elif time_step == "monthly":
         date_format = "%Y-%m"
-    else:
+    elif time_step == "annual":
         date_format = "%Y"
+    elif time_step == "alt":
+        date_format = None
+    elif time_step == "dlt":
+        date_format = None
 
-    Date = datetime.datetime.strptime(dump40.Date.decode(), date_format)
+    if date_format is not None:
+        Date = datetime.datetime.strptime(date_raw, date_format)
+    else:
+        Date = date_raw
 
     Items = dump40.ItemNum
 
@@ -153,11 +161,11 @@ def _npType(nType: int) -> type:
         raise Exception("Unknown value format: type {}".format(nType))
 
 
-def n_records(year: int, time_step: str) -> int:
+def n_records(year: Optional[int], time_step: str) -> int:
     """Get number of expected records in datastream based on time_step
 
     Args:
-        year (int): year of datastream file
+        year (Optional[int]): year of datastream file
         time_step (str): annual, monthly, or daily
 
     Returns:
@@ -169,19 +177,29 @@ def n_records(year: int, time_step: str) -> int:
         "annual",
         "monthly",
         "daily",
+        "alt",
+        "dlt",
     ], "time_step must be annual monthly or daily"
 
     if time_step == "annual":
         return 1
     elif time_step == "monthly":
         return 12
-    else:
+    elif time_step == "daily":
         p = pd.Period("{}-01-01".format(year))
         if p.is_leap_year:
             days = 366
         else:
             days = 365
         return days
+    # Long term average files
+    elif time_step == "alt":
+        return 1
+    elif time_step == "dlt":
+        return 365
+
+    # Here just for explicitness when running type-checker
+    return 0
 
 
 def gdbc_to_ds_buffer(gdbc: Path, network: Path) -> Optional[IO[bytes]]:
@@ -284,10 +302,22 @@ def get_masks(mask_ds, mask_layers, output_dir, year, time_step):
             date_cols = pd.date_range(
                 start="1/1/{}".format(year), end="12/31/{}".format(year), freq="MS"
             )
-        else:
+        elif time_step == "annual":
             date_cols = pd.date_range(
                 start="1/1/{}".format(year), end="12/31/{}".format(year), freq="YS"
             )
+
+        # Long Term Average files
+        elif time_step == "alt":
+            date_cols = [
+                "XXXX",
+            ]
+        elif time_step == "dlt":
+            dummy_dates = pd.date_range(start="1/1/2001", end="12/31/2001", freq="D")
+            year_mon = [
+                (str(d.month).zfill(2), str(d.day).zfill(2)) for d in dummy_dates
+            ]
+            date_cols = ["XXXX--{}-{}".format(m, d) for m, d in year_mon]
 
         if MaskType == "Polygon":
             dfOut = pd.DataFrame(index=MaskValues, columns=date_cols)
@@ -300,14 +330,14 @@ def get_masks(mask_ds, mask_layers, output_dir, year, time_step):
 
 
 def iter_ds(
-    file_buf: BinaryIO, mask_id: np.ndarray, year: int, time_step: str
+    file_buf: BinaryIO, mask_id: np.ndarray, year: Optional[int], time_step: str
 ) -> Generator[tuple[np.ndarray, datetime.datetime], None, None]:
     """Generator of (ndarray, datetime) record tuples over datastream file object
 
     Args:
         file_buf (BinaryIO): file object of datastream file (output from get_true_datastream)
         mask_id (np.ndarray): mask['ID'].data from mask xarray
-        year (int): year of datastream
+        year (Optional[int]): year of datastream
         time_step (str): annual, monthly, or daily
     Yields:
         Generator[tuple[np.ndarray, datetime.datetime]]: (data, datetime) record pairs
@@ -334,7 +364,7 @@ def iter_ds(
 
 
 def iter_gdbc(
-    gdbc: Path, network: Path, mask_id: np.ndarray, year: int, time_step: str
+    gdbc: Path, network: Path, mask_id: np.ndarray, year: Optional[int], time_step: str
 ) -> Generator[tuple[np.ndarray, datetime.datetime], None, None]:
     """Wrapper of iter_ds for gdbc via rgis2ds
 
@@ -342,7 +372,7 @@ def iter_gdbc(
         gdbc (Path): gdbc file path
         network (Path): gdbn file path
         mask_id (np.ndarray): mask['ID'].data from mask xarray
-        year (int): year of datastream
+        year (Optional[int]): year of datastream
         time_step (str): annual, monthly, or daily
     Yields:
         Generator[tuple[np.ndarray, datetime.datetime]]: (data, datetime) record pairs
@@ -363,9 +393,10 @@ def sample_ds(
     ],
     mask_layers: List[str],
     output_dir: Path,
-    year: int,
+    year: Optional[int],
     variable: str,
     time_step: str,
+    csv_name: Union[str, Path] = None,
 ) -> None:
 
     """Sample a datastream using a netcdf mask
@@ -375,9 +406,10 @@ def sample_ds(
         file_in (Union[BinaryIO, Path]): datastream file object or pathlike
         mask_layers (List[str]): list of masks from mask_nc to sample with
         output_dir (Path): directory of output
-        year (int): year of datastream file
+        year (Optional[int]): year of datastream file
         variable (str): variable of datastream file (ie. Discharge, Temperature..)
-        time_step (str): annual, monthly, or daily
+        time_step (str): annual, monthly, daily, alt, or dlt
+        csv_name (Union[str, Path]): Name of resulting sampled csv
     """
 
     file_buf = get_true_datastream(file_in)
@@ -391,6 +423,7 @@ def sample_ds(
         for m, Mask, MaskType, MaskValues, OutputPath, dfOut in masks:
             if MaskType == "Polygon":
                 # TODO deal with polygon masks
+                # ENSURE WORKS with aTS/Dts
                 pass
                 # For instance getting the mean of the variable for each
                 # region:
@@ -409,7 +442,16 @@ def sample_ds(
                 )
 
     for m, _, _, _, OutputPath, dfOut in masks:
-        dfOut.to_csv(OutputPath.joinpath("{}_{}.csv".format(variable, year)))
+        # provide default csv name
+        year_name = str(year)
+        if year is None:
+            year_name = time_step
+        if csv_name is None:
+            csv_f = OutputPath.joinpath("{}_{}.csv".format(variable, year_name))
+        else:
+            csv_f = OutputPath.joinpath(csv_name)
+
+        dfOut.to_csv(csv_f)
 
 
 def sample_gdbc(
@@ -418,9 +460,10 @@ def sample_gdbc(
     network: Path,
     mask_layers: List[str],
     output_dir: Path,
-    year: int,
+    year: Optional[int],
     variable: str,
     time_step: str,
+    csv_name: str = None,
 ) -> None:
 
     """Sample a gdbc rgis grid using a netcdf mask
@@ -431,11 +474,12 @@ def sample_gdbc(
         network (Path): gdbn rgis network
         mask_layers (List[str]): list of masks from mask_nc to sample with
         output_dir (Path): directory of output
-        year (int): year of datastream file
+        year (Optional[int]): year of datastream file
         variable (str): variable of datastream file (ie. Discharge, Temperature..)
-        time_step (str): annual, monthly, or daily
+        time_step (str): annual, monthly, daily, alt, or dlt
+        csv_name (str): Name of resulting sampled csv
     """
 
     assert "gdbn" in network.name.split(".", 1)[-1], "Network must be gdbn"
     ds = gdbc_to_ds_buffer(file_path, network)
-    sample_ds(mask_nc, ds, mask_layers, output_dir, year, variable, time_step)  # type: ignore
+    sample_ds(mask_nc, ds, mask_layers, output_dir, year, variable, time_step, csv_name=csv_name)  # type: ignore

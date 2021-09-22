@@ -65,6 +65,7 @@ def get_mask_ds(network: xarray_ds) -> xarray_ds:
         {
             "How to use stored Attribute Tables": "Import as pandas dataframe using command: pd.read_csv(StringIO(<xArray>.attrs['Attribute Table']),sep='\t')",
             "creation_date": "{}".format(datetime.datetime.now()),
+            "crs": "+init=epsg:4326",
         }
     )
     return mask_ds

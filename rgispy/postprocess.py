@@ -24,6 +24,10 @@ def join_sampled_files(part_files: list[Path]) -> pd.DataFrame:
     return df
 
 
+def join_sampled_dir(sample_dir):
+    return join_sampled_files(sorted(sample_dir.iterdir()))
+
+
 def stack_sampled_df(
     sampled_df: pd.DataFrame, variable: str, index_name="cellid"
 ) -> pd.DataFrame:
@@ -141,4 +145,27 @@ def add_sampleid(sampled_df: pd.DataFrame, sampler_df: pd.DataFrame) -> pd.DataF
     # join on cellid indexes
     df = sampled_df.join(cellid_df)
     df.rename(columns={"id": "sampleid"}, inplace=True)
+    return df
+
+
+def normalize_sampled_dir(
+    sample_dir: Path, variable: str, sampler_ref: pd.Dataframe
+) -> pd.DataFrame:
+    """Convert wide form cellid indexed sampled dataframe to long form with 'sampleid' corresponding to id of sampling feature.
+
+    Args:
+        sample_dir (Path): Directory of sampled files
+        variable (str): name of variable (Discharge, Runoff, ... etc)
+        sampler_ref (pd.Dataframe): DataFrame of sampling attribute (Guages, Dams, Country, ... etc) containing 'id' and 'cellid' columns
+
+    Returns:
+        pd.DataFrame: Normalized dataframe indexed by (sampleid, date) where sampleid corresponds to id in sampler_ref
+    """
+    df = join_sampled_dir(sample_dir)
+    df = stack_sampled_df(df, variable=variable)
+    df = add_sampleid(df, sampler_ref)
+
+    df.reset_index(inplace=True)
+    df.set_index(["sampleid", "date"], inplace=True)
+    df.drop("cellid", axis=1, inplace=True)
     return df

@@ -268,6 +268,21 @@ def next_cell(cell_index: tuple, to_cell_code: int) -> Optional[tuple[int, int]]
         return None
 
 
+def lookup_cellid(lon: float, lat: float, network: xarray_ds) -> int:
+    """Get cellid of snapped coordinate pair
+
+    Args:
+        lon (float): longitude
+        lat (float): latitude
+        network (xarray_ds): network xarray dataset
+
+    Returns:
+        int: cellid of coordinate
+    """
+    cellid = network["ID"].sel(lat=lat, lon=lon).data.tolist()
+    return int(cellid)
+
+
 def get_basin_mouth(network: xarray_ds, cell_idx: tuple) -> tuple[Any, tuple[Any, ...]]:
     """Get the mouth of the basin for a particular network cell by recursing through network.
 

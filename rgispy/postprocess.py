@@ -149,7 +149,7 @@ def add_sampleid(sampled_df: pd.DataFrame, sampler_df: pd.DataFrame) -> pd.DataF
 
 
 def normalize_sampled_dir(
-    sample_dir: Path, variable: str, sampler_ref: pd.Dataframe
+    sample_dir: Path, variable: str, sampler_ref: pd.DataFrame
 ) -> pd.DataFrame:
     """Convert wide form cellid indexed sampled dataframe to long form with 'sampleid' corresponding to id of sampling feature.
 

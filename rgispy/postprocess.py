@@ -7,10 +7,10 @@ from .network import lookup_cellid
 
 
 def join_sampled_files(part_files: list[Path]) -> pd.DataFrame:
-    """Join directory of sampled files into one dataframe in wide pivot format.
+    """Join list of sampled files into one dataframe in wide pivot format.
 
     Args:
-        part_files (list[Path]): Directory containing csvs (Discharge_1990.csv, Discharge_1991.csv ...)
+        part_files (list[Path]): list-like of sampled files (Discharge_1990.csv, Discharge_1991.csv ...)
 
     Returns:
         pd.DataFrame: pandas dataframe in wide form (columns are dates)
@@ -22,10 +22,6 @@ def join_sampled_files(part_files: list[Path]) -> pd.DataFrame:
         "cellid",
     ]
     return df
-
-
-def join_sampled_dir(sample_dir):
-    return join_sampled_files(sorted(sample_dir.iterdir()))
 
 
 def stack_sampled_df(
@@ -148,24 +144,30 @@ def add_sampleid(sampled_df: pd.DataFrame, sampler_df: pd.DataFrame) -> pd.DataF
     return df
 
 
-def normalize_sampled_dir(
-    sample_dir: Path, variable: str, sampler_ref: pd.DataFrame
+def normalize_sampled_files(
+    sampled_files: list[Path], variable: str, sampler_ref: pd.DataFrame
 ) -> pd.DataFrame:
     """Convert wide form cellid indexed sampled dataframe to long form with 'sampleid' corresponding to id of sampling feature.
 
     Args:
-        sample_dir (Path): Directory of sampled files
+        sample_files (list like): iterable of sampld files
         variable (str): name of variable (Discharge, Runoff, ... etc)
         sampler_ref (pd.Dataframe): DataFrame of sampling attribute (Guages, Dams, Country, ... etc) containing 'id' and 'cellid' columns
 
     Returns:
         pd.DataFrame: Normalized dataframe indexed by (sampleid, date) where sampleid corresponds to id in sampler_ref
     """
-    df = join_sampled_dir(sample_dir)
+    # lowercase columns
+    sampler_ref = sampler_ref.copy()
+    sampler_ref.columns = map(str.lower, sampler_ref.columns)
+
+    df = join_sampled_files(sampled_files)
     df = stack_sampled_df(df, variable=variable)
     df = add_sampleid(df, sampler_ref)
 
     df.reset_index(inplace=True)
-    df.set_index(["sampleid", "date"], inplace=True)
     df.drop("cellid", axis=1, inplace=True)
+
+    df.set_index(["sampleid", "date"], inplace=True)
+    df.sort_index(inplace=True)
     return df

@@ -13,6 +13,8 @@ setup(
         "numpy",
         "pandas",
         "xarray",
+        "rasterio",
+        "rioxarray",
         "netcdf4",
         "geopandas",
         "sqlalchemy",

@@ -8,8 +8,6 @@ from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
-import rasterio.crs as crs
-import rioxarray  # noqa
 import xarray as xa
 
 # Type Hints
@@ -117,6 +115,9 @@ def gdbn_to_netcdf(in_gdbn: Path, out_netcdf: Path, project: str = "") -> Path:
     Returns:
         Path: Path to created netcdf network
     """
+    import rasterio.crs as crs
+    import rioxarray  # noqa
+
     # We define the CRS for the output NetCDF
     wkt = 'GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563,AUTHORITY["EPSG","7030"]],AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.01745329251994328,AUTHORITY["EPSG","9122"]],AUTHORITY["EPSG","4326"]]'
     crs4326 = crs.CRS.from_wkt(wkt)

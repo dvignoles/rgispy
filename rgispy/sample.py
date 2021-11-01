@@ -92,6 +92,21 @@ class MFdsHeader(Structure):
     ]
 
 
+def get_date_format(time_step):
+
+    time_step = time_step.lower()
+    if time_step == "daily":
+        return "%Y-%m-%d"
+    elif time_step == "monthly":
+        return "%Y-%m"
+    elif time_step == "annual":
+        return "%Y"
+    elif time_step == "alt":
+        return None
+    elif time_step == "dlt":
+        return None
+
+
 def headDS(ifile, time_step):
 
     forty = ifile.read(40)
@@ -106,16 +121,8 @@ def headDS(ifile, time_step):
     npType = _npType(Type)
 
     date_raw = dump40.Date.decode()
-    if time_step == "daily":
-        date_format = "%Y-%m-%d"
-    elif time_step == "monthly":
-        date_format = "%Y-%m"
-    elif time_step == "annual":
-        date_format = "%Y"
-    elif time_step == "alt":
-        date_format = None
-    elif time_step == "dlt":
-        date_format = None
+    time_step = time_step.lower()
+    date_format = get_date_format(time_step)
 
     if date_format is not None:
         Date = datetime.datetime.strptime(date_raw, date_format)
@@ -281,6 +288,49 @@ def get_true_datastream(
                 return file_in
 
 
+def _gen_date_cols(time_step, year):
+    time_step = time_step.lower()
+    valid_time_steps = [
+        "annual",
+        "monthly",
+        "daily",
+        "alt",
+        "dlt",
+    ]
+    assert time_step in valid_time_steps, "time_step must be in {}".format(
+        valid_time_steps
+    )
+
+    freq_d = {
+        "annual": "YS",
+        "monthly": "MS",
+        "daily": "D",
+    }
+    if time_step in ["daily", "monthly", "annual"]:
+
+        date_cols = pd.date_range(
+            start="1/1/{}".format(year),
+            end="12/31/{}".format(year),
+            freq=freq_d[time_step],
+        )
+        return date_cols
+
+    # Long Term Average files
+    elif time_step == "alt":
+        date_cols = [
+            "XXXX",
+        ]
+        return date_cols
+
+    elif time_step in [
+        "dlt",
+    ]:
+        dummy_dates = pd.date_range(start="1/1/2001", end="12/31/2001", freq="D")
+        year_mon = [(str(d.month).zfill(2), str(d.day).zfill(2)) for d in dummy_dates]
+        if time_step == "dlt":
+            return ["XXXX--{}-{}".format(m, d) for m, d in year_mon]
+
+
 def get_masks(mask_ds, mask_layers, output_dir, year, time_step):
 
     masks = []
@@ -294,33 +344,13 @@ def get_masks(mask_ds, mask_layers, output_dir, year, time_step):
         OutputPath = output_dir.joinpath(m, time_step.capitalize())
         OutputPath.mkdir(exist_ok=True, parents=True)
 
-        if time_step == "daily":
-            date_cols = pd.date_range(
-                start="1/1/{}".format(year), end="12/31/{}".format(year), freq="D"
-            )
-        elif time_step == "monthly":
-            date_cols = pd.date_range(
-                start="1/1/{}".format(year), end="12/31/{}".format(year), freq="MS"
-            )
-        elif time_step == "annual":
-            date_cols = pd.date_range(
-                start="1/1/{}".format(year), end="12/31/{}".format(year), freq="YS"
-            )
-
-        # Long Term Average files
-        elif time_step == "alt":
-            date_cols = [
-                "XXXX",
-            ]
-        elif time_step == "dlt":
-            dummy_dates = pd.date_range(start="1/1/2001", end="12/31/2001", freq="D")
-            year_mon = [
-                (str(d.month).zfill(2), str(d.day).zfill(2)) for d in dummy_dates
-            ]
-            date_cols = ["XXXX--{}-{}".format(m, d) for m, d in year_mon]
+        time_step = time_step.lower()
+        date_cols = _gen_date_cols(time_step, year)
 
         if MaskType == "Polygon":
-            dfOut = pd.DataFrame(index=MaskValues, columns=date_cols)
+            dfOut = pd.DataFrame(
+                index=MaskValues,
+            )
         elif MaskType == "Point":
             dfOut = pd.DataFrame(index=MaskValues, columns=date_cols)
 
@@ -397,6 +427,7 @@ def sample_ds(
     variable: str,
     time_step: str,
     csv_name: Union[str, Path] = None,
+    cell_area: np.ndarray = None,
 ) -> None:
 
     """Sample a datastream using a netcdf mask
@@ -410,6 +441,7 @@ def sample_ds(
         variable (str): variable of datastream file (ie. Discharge, Temperature..)
         time_step (str): annual, monthly, daily, alt, or dlt
         csv_name (Union[str, Path]): Name of resulting sampled csv
+        cell_area (Optional[np.ndarray]): Cell Area grid corresponding to mask. Needed for polygon masks to calculate weighted zonal mean.
     """
 
     file_buf = get_true_datastream(file_in)
@@ -422,17 +454,21 @@ def sample_ds(
         # each loop is one day in the case of daily time_step
         for m, Mask, MaskType, MaskValues, OutputPath, dfOut in masks:
             if MaskType == "Polygon":
-                # TODO deal with polygon masks
-                # ENSURE WORKS with aTS/Dts
-                pass
-                # For instance getting the mean of the variable for each
-                # region:
-                dfOut["mean_{}".format(Date.strftime("%Y-%m-%d"))] = [
-                    Data[Mask == i].mean() for i in MaskValues
+                assert (
+                    cell_area is not None
+                ), "Cell Area required to weight polygon averages"
+
+                dstr = Date.strftime("%Y-%m-%d")
+                dfOut["mean_{}".format(dstr)] = [
+                    # Mean weighted by cell area
+                    np.average(Data[Mask == i], weights=cell_area[Mask == i])
+                    for i in MaskValues
                 ]
-                # or the sum:
-                dfOut["sum_{}".format(Date.strftime("%Y-%m-%d"))] = [
-                    Data[Mask == i].sum() for i in MaskValues
+                dfOut["min_{}".format(dstr)] = [
+                    Data[Mask == i].min() for i in MaskValues
+                ]
+                dfOut["max_{}".format(dstr)] = [
+                    Data[Mask == i].max() for i in MaskValues
                 ]
             elif MaskType == "Point":
                 dfOut[Date] = pd.DataFrame(
@@ -464,6 +500,7 @@ def sample_gdbc(
     variable: str,
     time_step: str,
     csv_name: str = None,
+    cell_area: np.ndarray = None,
 ) -> None:
 
     """Sample a gdbc rgis grid using a netcdf mask
@@ -478,8 +515,9 @@ def sample_gdbc(
         variable (str): variable of datastream file (ie. Discharge, Temperature..)
         time_step (str): annual, monthly, daily, alt, or dlt
         csv_name (str): Name of resulting sampled csv
+        cell_area (Optional[np.ndarray]): Cell Area grid corresponding to mask. Needed for polygon masks to calculate weighted zonal mean.
     """
 
     assert "gdbn" in network.name.split(".", 1)[-1], "Network must be gdbn"
     ds = gdbc_to_ds_buffer(file_path, network)
-    sample_ds(mask_nc, ds, mask_layers, output_dir, year, variable, time_step, csv_name=csv_name)  # type: ignore
+    sample_ds(mask_nc, ds, mask_layers, output_dir, year, variable, time_step, csv_name=csv_name, cell_area=cell_area)  # type: ignore

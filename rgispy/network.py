@@ -1,5 +1,7 @@
 import datetime
+import gzip
 import os
+import struct
 import subprocess as sp
 from io import StringIO
 from math import isnan
@@ -8,7 +10,7 @@ from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
-import xarray as xa
+import xarray as xr
 
 # Type Hints
 from xarray.core.dataset import Dataset as xarray_ds
@@ -20,6 +22,8 @@ if "GHAASDIR" in os.environ:
 else:
     Dir2Ghaas = "/usr/local/share/ghaas"
 
+# EPSG:4326
+WKT = 'GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563,AUTHORITY["EPSG","7030"]],AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.01745329251994328,AUTHORITY["EPSG","9122"]],AUTHORITY["EPSG","4326"]]'
 
 # Define the variables and their save structure
 OUT_ENCODING = {
@@ -104,7 +108,224 @@ def LoadDBCells(in_gdbn):
     return df_out
 
 
-def gdbn_to_netcdf(in_gdbn: Path, out_netcdf: Path, project: str = "") -> Path:
+def _ReadDBLayers(inFile):
+    cmd = [Dir2Ghaas + "/bin/rgis2table", "-a", "DBLayers", inFile]
+    proc = sp.Popen(cmd, stdout=sp.PIPE)  # , shell=True) +inFile
+    data1 = StringIO(bytearray(proc.stdout.read()).decode("utf-8"))
+    Layers = pd.read_csv(
+        data1,
+        sep="\t",
+        dtype={
+            "ID": "int",
+            "RowNum": "int",
+            "ColNum": "int",
+            "ValueType": "int",
+            "ValueSize": "int",
+            "CellWidth": "float",
+            "CellHeight": "float",
+        },
+    )
+    Layers["ID"] = Layers["ID"] - 1
+
+    return Layers
+
+
+def _LoadGeo(name, compressed):
+    if compressed:
+        ifile = gzip.open(name, "rb")
+    else:
+        ifile = open(name, "rb")
+    ifile.seek(40)
+    LLx = struct.unpack("d", ifile.read(8))[0]
+    LLy = struct.unpack("d", ifile.read(8))[0]
+    ifile.read(8)
+    titleLen = struct.unpack("h", ifile.read(2))[0]
+    title = ifile.read(titleLen).decode()
+    MetaData = {"title": title}
+    ifile.read(9)
+    docLen = struct.unpack("h", ifile.read(2))[0]
+    _ = ifile.read(docLen).decode()
+    ifile.read(25)
+    readMore = True
+    while readMore:
+        infoLen = struct.unpack("h", ifile.read(2))[0]
+        infoRec = ifile.read(infoLen).decode()
+        if infoRec == "Data Records":
+            readMore = False
+            break
+        ifile.read(1)
+        valLen = struct.unpack("h", ifile.read(2))[0]
+        if valLen == 44:
+            ifile.read(26)
+        elif valLen == 48:
+            ifile.read(30)
+        valLen = struct.unpack("h", ifile.read(2))[0]
+        valRec = ifile.read(valLen).decode()
+        MetaData[infoRec.lower()] = valRec
+        ifile.read(1)
+
+    return LLx, LLy, MetaData
+
+
+def get_network_meta(gdbn):
+    llx, lly, metadata = _LoadGeo(gdbn, True)
+    layers = _ReadDBLayers(gdbn)
+
+    meta = dict(
+        llx=llx,
+        lly=lly,
+        col_num=layers[["ColNum"]].values.tolist()[0][0],
+        row_num=layers[["RowNum"]].values.tolist()[0][0],
+        cell_width=layers[["CellWidth"]].values.tolist()[0][0],
+        cell_height=layers[["CellHeight"]].values.tolist()[0][0],
+    )
+    return meta
+
+
+def GetRounding(inArray):
+    for r in range(1, 20):
+        good = True
+        prev = 0
+        for i in range(0, len(inArray)):
+            curr = round(inArray[i], ndigits=r)
+            if curr == prev:
+                good = False
+                break
+            prev = curr
+        if good:
+            return r
+
+
+def calc_rounded_coords(gdbn):
+    meta = get_network_meta(gdbn)
+    inX = meta["llx"] + meta["cell_width"] / 2.0
+    inY = meta["lly"] + meta["cell_height"] / 2.0
+    xcoords = [inX + meta["cell_width"] * float(n) for n in range(0, meta["col_num"])]
+    ycoords = [inY + meta["cell_height"] * float(n) for n in range(0, meta["row_num"])]
+
+    roundX = GetRounding(xcoords)
+    roundY = GetRounding(ycoords)
+
+    round_ycoords = [round(y, ndigits=roundY) for y in ycoords]
+    round_xcoords = [round(x, ndigits=roundX) for x in xcoords]
+
+    shape = (meta["row_num"], meta["col_num"])
+    da_template = xr.DataArray(
+        np.zeros(shape=shape),
+        dims=["lat", "lon"],
+        coords={"lat": round_ycoords, "lon": round_xcoords},
+        name="da_template",
+    )
+
+    return xcoords, roundX, ycoords, roundY, da_template
+
+
+def get_dbcells_component_da(da_template, calc_xcoords, calc_ycoords, dbcells, name):
+    piv = dbcells[[name, "CellXCoord", "CellYCoord"]].pivot(
+        index="CellYCoord", columns="CellXCoord"
+    )
+
+    # shape of dbcells
+    da_temp = xr.DataArray(
+        data=piv.values,
+        dims=["lat", "lon"],
+        coords=[
+            dbcells["RoundCellYCoord"].sort_values(ascending=True).unique(),
+            dbcells["RoundCellXCoord"].sort_values(ascending=True).unique(),
+        ],
+        name="da_temp",
+    )
+
+    # merge with desired template shape
+    da = xr.merge([da_template, da_temp], join="left")["da_temp"]
+
+    # dbcells rounded_coord -> dbcells actual coord
+    x_cell_lookup = pd.DataFrame(
+        {
+            "CellXCoord": dbcells.CellXCoord.unique(),
+        },
+        index=dbcells.RoundCellXCoord.unique(),
+    ).sort_index()
+    y_cell_lookup = pd.DataFrame(
+        {
+            "CellYCoord": dbcells.CellYCoord.unique(),
+        },
+        index=dbcells.RoundCellYCoord.unique(),
+    ).sort_index()
+
+    # calculcated rounded coord -> calculated actual coord
+    x_fill_lookup = pd.DataFrame(
+        {
+            "CellXCoord": calc_xcoords,
+        },
+        index=da_template.lon.data,
+    ).sort_index()
+    y_fill_lookup = pd.DataFrame(
+        {
+            "CellYCoord": calc_ycoords,
+        },
+        index=da_template.lat.data,
+    ).sort_index()
+
+    def _lookup_final_x(x):
+        try:
+            coord = x_cell_lookup.loc[x, "CellXCoord"]
+            return coord
+        except KeyError:
+            return x_fill_lookup.loc[x, "CellXCoord"]
+
+    def _lookup_final_y(y):
+        try:
+            coord = y_cell_lookup.loc[y, "CellYCoord"]
+            return coord
+        except KeyError:
+            return y_fill_lookup.loc[y, "CellYCoord"]
+
+    # dbcells actual coord if it maps to a rounded calculated coord else the actual calculated coord
+    final_x = x_fill_lookup.index.map(_lookup_final_x).values
+    final_y = y_fill_lookup.index.map(_lookup_final_y).values
+
+    da["lat"] = final_y
+    da["lon"] = final_x
+    print(name)
+
+    return da
+
+
+def get_encoding(min_val, max_val):
+    if min_val >= 0:  # if all values are positive, we can use unsigned integers
+        if max_val < 255:
+            return "uint8", 255
+        elif max_val < 65535:
+            return "uint16", 65535
+        elif max_val < 4294967295:
+            return "uint32", 4294967295
+        elif max_val < 18446744073709551615:
+            return "uint64", 18446744073709551615
+        else:
+            raise Exception(
+                "max_val value: {}... Unable to code data to unsigned int type!".format(
+                    max_val
+                )
+            )
+    else:  # otherwise we use signed integers
+        if max_val <= 127:
+            return "int8", -128
+        elif max_val <= 32767:
+            return "int16", -32768
+        elif max_val <= 2147483647:
+            return "int32", -2147483648
+        elif max_val <= 9223372036854775807:
+            return "int64", -9223372036854775808
+        else:
+            raise Exception(
+                "max_val value: {}... Unable to code data to signed int type!".format(
+                    max_val
+                )
+            )
+
+
+def gdbn_to_netcdf(gdbn: Path, out_netcdf: Path, project: str = "") -> Path:
 
     """Convert .gdbn rgis network to netcdf network compatible with rgispy
 
@@ -118,100 +339,45 @@ def gdbn_to_netcdf(in_gdbn: Path, out_netcdf: Path, project: str = "") -> Path:
     import rasterio.crs as crs
     import rioxarray  # noqa
 
-    # We define the CRS for the output NetCDF
-    wkt = 'GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563,AUTHORITY["EPSG","7030"]],AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.01745329251994328,AUTHORITY["EPSG","9122"]],AUTHORITY["EPSG","4326"]]'
-    crs4326 = crs.CRS.from_wkt(wkt)
+    ds = xr.Dataset()
+    crs4326 = crs.CRS.from_wkt(WKT)
 
-    # We read the data (can take a long time)
-    dfNet = LoadDBCells(in_gdbn)
+    dbcells = LoadDBCells(gdbn)
+    xcoords, roundX, ycoords, roundY, da_template = calc_rounded_coords(gdbn)
 
-    # Create and empty xarray DataSet to add the xarrays as variables
-    ds = xa.Dataset()
+    dbcells["RoundCellXCoord"] = dbcells.CellXCoord.map(
+        lambda x: round(x, ndigits=roundX)
+    )
+    dbcells["RoundCellYCoord"] = dbcells.CellYCoord.map(
+        lambda y: round(y, ndigits=roundY)
+    )
 
-    # We process each variable individually (e.g. ToCell, Order etc.)
     for var, encoding in OUT_ENCODING.items():
-        print("Processing variable {}".format(var))
-        # Extract the column that we want from the pandas dataframe
-        # the column correcponded to the name of the variable
-        # We then pivot it using the coordinates columns as rows (Ys) and
-        # columns (Xs) headers
-        df_pv = dfNet[[var, "CellXCoord", "CellYCoord"]].pivot(
-            index="CellYCoord", columns="CellXCoord"
-        )
+        max_val = dbcells[var].max() / encoding["scale_factor"]
+        min_val = dbcells[var].min()
 
-        # Make sure that we have the smallest data type needed
-        max = dfNet[var].max() / encoding["scale_factor"]
-        min = dfNet[var].min()
-        if min >= 0:  # if all values are positive, we can use unsigned integers
-            if max < 255:
-                OUT_ENCODING[var]["dtype"] = "uint8"
-                OUT_ENCODING[var]["_FillValue"] = 255
-            elif max < 65535:
-                OUT_ENCODING[var]["dtype"] = "uint16"
-                OUT_ENCODING[var]["_FillValue"] = 65535
-            elif max < 4294967295:
-                OUT_ENCODING[var]["dtype"] = "uint32"
-                OUT_ENCODING[var]["_FillValue"] = 4294967295
-            elif max < 18446744073709551615:
-                OUT_ENCODING[var]["dtype"] = "uint64"
-                OUT_ENCODING[var]["_FillValue"] = 18446744073709551615
-            else:
-                raise Exception(
-                    "Max value: {}... Unable to code data to unsigned int type!".format(
-                        max
-                    )
-                )
-        else:  # otherwise we use signed integers
-            if max <= 127:
-                OUT_ENCODING[var]["dtype"] = "int8"
-                OUT_ENCODING[var]["_FillValue"] = -128
-            elif max <= 32767:
-                OUT_ENCODING[var]["dtype"] = "int16"
-                OUT_ENCODING[var]["_FillValue"] = -32768
-            elif max <= 2147483647:
-                OUT_ENCODING[var]["dtype"] = "int32"
-                OUT_ENCODING[var]["_FillValue"] = -2147483648
-            elif max <= 9223372036854775807:
-                OUT_ENCODING[var]["dtype"] = "int64"
-                OUT_ENCODING[var]["_FillValue"] = -9223372036854775808
-            else:
-                raise Exception(
-                    "Max value: {}... Unable to code data to signed int type!".format(
-                        max
-                    )
-                )
-        # Note that int numpy arrays cannot have nan... (so we convert first to -9999)
-        # No longer needed, the encoding on save takes care of it (good to keep it here
-        # for future reference)
-        # df_pv=df_pv.fillna(-9999).astype("int32")
+        # TODO: this without relying on a global dict modification <:l
+        dtype, fill = get_encoding(min_val, max_val)
+        OUT_ENCODING[var]["dtype"] = dtype
+        OUT_ENCODING[var]["_FillValue"] = fill
 
-        # And now we can create the xarray
-        da = xa.DataArray(
-            data=df_pv.values,
-            dims=["lat", "lon"],
-            coords=[
-                dfNet["CellYCoord"].sort_values(ascending=True).unique(),
-                dfNet["CellXCoord"].sort_values(ascending=True).unique(),
-            ],
-        )
-        # And add the CRS (we use the rioxarray package...)
+        da = get_dbcells_component_da(da_template, xcoords, ycoords, dbcells, var)
+
         da.rio.set_spatial_dims(y_dim="lat", x_dim="lon", inplace=True)
         da.rio.write_crs(crs4326, inplace=True)
         da.assign_attrs(OUT_ATTR[var])
-        # We add the xarray to the xarray dataset
         ds[var] = da
 
-    # Once all the variables are loaded into the xarray dataset we add
-    # dataset attributes
     ds = ds.assign_attrs(
         {
-            "WBM_network": in_gdbn.__str__(),
+            "WBM_network": gdbn.__str__(),
             "project": project,
             "crs": "+init=epsg:4326",
             "creation_date": "{}".format(datetime.datetime.now()),
         }
     )
-    # And we save the xarray dataset as a netCDF
+
+    # TODO: decouple ds creation from netcdf saving
     ds.to_netcdf(out_netcdf, encoding=OUT_ENCODING)
     return out_netcdf
 

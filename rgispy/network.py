@@ -4,7 +4,7 @@ import os
 import struct
 import subprocess as sp
 from io import StringIO
-from math import isnan
+from math import ceil, isnan
 from pathlib import Path
 from typing import Any, Optional
 
@@ -15,7 +15,7 @@ import xarray as xr
 # Type Hints
 from xarray.core.dataset import Dataset as xarray_ds
 
-from .grid import non_nan_cells
+from .grid import count_non_nan, non_nan_cells
 
 if "GHAASDIR" in os.environ:
     Dir2Ghaas = os.environ["GHAASDIR"]
@@ -90,6 +90,39 @@ OUT_ATTR = {
         "units": "km",
     },
 }
+
+
+def get_encoding(min_val, max_val):
+    if min_val >= 0:  # if all values are positive, we can use unsigned integers
+        if max_val < 255:
+            return "uint8", 255
+        elif max_val < 65535:
+            return "uint16", 65535
+        elif max_val < 4294967295:
+            return "uint32", 4294967295
+        elif max_val < 18446744073709551615:
+            return "uint64", 18446744073709551615
+        else:
+            raise Exception(
+                "max_val value: {}... Unable to code data to unsigned int type!".format(
+                    max_val
+                )
+            )
+    else:  # otherwise we use signed integers
+        if max_val <= 127:
+            return "int8", -128
+        elif max_val <= 32767:
+            return "int16", -32768
+        elif max_val <= 2147483647:
+            return "int32", -2147483648
+        elif max_val <= 9223372036854775807:
+            return "int64", -9223372036854775808
+        else:
+            raise Exception(
+                "max_val value: {}... Unable to code data to signed int type!".format(
+                    max_val
+                )
+            )
 
 
 def LoadDBCells(in_gdbn):
@@ -182,45 +215,12 @@ def get_network_meta(gdbn):
     return meta
 
 
-def GetRounding(inArray):
-    for r in range(1, 20):
-        good = True
-        prev = 0
-        for i in range(0, len(inArray)):
-            curr = round(inArray[i], ndigits=r)
-            if curr == prev:
-                good = False
-                break
-            prev = curr
-        if good:
-            return r
-
-
-def calc_rounded_coords(gdbn):
-    meta = get_network_meta(gdbn)
-    inX = meta["llx"] + meta["cell_width"] / 2.0
-    inY = meta["lly"] + meta["cell_height"] / 2.0
-    xcoords = [inX + meta["cell_width"] * float(n) for n in range(0, meta["col_num"])]
-    ycoords = [inY + meta["cell_height"] * float(n) for n in range(0, meta["row_num"])]
-
-    roundX = GetRounding(xcoords)
-    roundY = GetRounding(ycoords)
-
-    round_ycoords = [round(y, ndigits=roundY) for y in ycoords]
-    round_xcoords = [round(x, ndigits=roundX) for x in xcoords]
-
-    shape = (meta["row_num"], meta["col_num"])
-    da_template = xr.DataArray(
-        np.zeros(shape=shape),
-        dims=["lat", "lon"],
-        coords={"lat": round_ycoords, "lon": round_xcoords},
-        name="da_template",
-    )
-
-    return xcoords, roundX, ycoords, roundY, da_template
-
-
-def get_dbcells_component_da(da_template, calc_xcoords, calc_ycoords, dbcells, name):
+def get_dbcells_component_da(
+    da_template,
+    coords,
+    dbcells,
+    name,
+):
     piv = dbcells[[name, "CellXCoord", "CellYCoord"]].pivot(
         index="CellYCoord", columns="CellXCoord"
     )
@@ -230,8 +230,8 @@ def get_dbcells_component_da(da_template, calc_xcoords, calc_ycoords, dbcells, n
         data=piv.values,
         dims=["lat", "lon"],
         coords=[
-            dbcells["RoundCellYCoord"].sort_values(ascending=True).unique(),
-            dbcells["RoundCellXCoord"].sort_values(ascending=True).unique(),
+            sorted(coords["y"]["true_round"]),
+            sorted(coords["x"]["true_round"]),
         ],
         name="da_temp",
     )
@@ -239,32 +239,34 @@ def get_dbcells_component_da(da_template, calc_xcoords, calc_ycoords, dbcells, n
     # merge with desired template shape
     da = xr.merge([da_template, da_temp], join="left")["da_temp"]
 
+    assert count_non_nan(piv) == count_non_nan(da), "mismatch between rounded coords"
+
     # dbcells rounded_coord -> dbcells actual coord
     x_cell_lookup = pd.DataFrame(
         {
-            "CellXCoord": dbcells.CellXCoord.unique(),
+            "CellXCoord": coords["x"]["true"],
         },
-        index=dbcells.RoundCellXCoord.unique(),
+        index=coords["x"]["true_round"],
     ).sort_index()
     y_cell_lookup = pd.DataFrame(
         {
-            "CellYCoord": dbcells.CellYCoord.unique(),
+            "CellYCoord": coords["y"]["true"],
         },
-        index=dbcells.RoundCellYCoord.unique(),
+        index=coords["y"]["true_round"],
     ).sort_index()
 
     # calculcated rounded coord -> calculated actual coord
     x_fill_lookup = pd.DataFrame(
         {
-            "CellXCoord": calc_xcoords,
+            "CellXCoord": coords["x"]["calc"],
         },
-        index=da_template.lon.data,
+        index=coords["x"]["calc_round"],
     ).sort_index()
     y_fill_lookup = pd.DataFrame(
         {
-            "CellYCoord": calc_ycoords,
+            "CellYCoord": coords["y"]["calc"],
         },
-        index=da_template.lat.data,
+        index=coords["y"]["calc_round"],
     ).sort_index()
 
     def _lookup_final_x(x):
@@ -287,45 +289,81 @@ def get_dbcells_component_da(da_template, calc_xcoords, calc_ycoords, dbcells, n
 
     da["lat"] = final_y
     da["lon"] = final_x
-    print(name)
 
     return da
 
 
-def get_encoding(min_val, max_val):
-    if min_val >= 0:  # if all values are positive, we can use unsigned integers
-        if max_val < 255:
-            return "uint8", 255
-        elif max_val < 65535:
-            return "uint16", 65535
-        elif max_val < 4294967295:
-            return "uint32", 4294967295
-        elif max_val < 18446744073709551615:
-            return "uint64", 18446744073709551615
-        else:
-            raise Exception(
-                "max_val value: {}... Unable to code data to unsigned int type!".format(
-                    max_val
-                )
-            )
-    else:  # otherwise we use signed integers
-        if max_val <= 127:
-            return "int8", -128
-        elif max_val <= 32767:
-            return "int16", -32768
-        elif max_val <= 2147483647:
-            return "int32", -2147483648
-        elif max_val <= 9223372036854775807:
-            return "int64", -9223372036854775808
-        else:
-            raise Exception(
-                "max_val value: {}... Unable to code data to signed int type!".format(
-                    max_val
-                )
-            )
+def get_round_coords(dbcells_x, dbcells_y, meta):
+
+    inX = meta["llx"] + meta["cell_width"] / 2.0
+    inY = meta["lly"] + meta["cell_height"] / 2.0
+    x_calc = [inX + meta["cell_width"] * float(n) for n in range(0, meta["col_num"])]
+    y_calc = [inY + meta["cell_height"] * float(n) for n in range(0, meta["row_num"])]
+
+    def _get_round(dbcells_arr, calc_arr):
+        for i in range(1, 10):
+
+            # ceil function minimizes risk of rounding mismatch due to floating point precision
+            # ie. decimals ending in 5 round down becasue they are internally represented 0.5 ~= .49999999
+            def func(x):
+                return ceil(round(x, i) * 100)
+
+            dbcell_round = list(map(func, dbcells_arr))
+            calc_round = list(map(func, calc_arr))
+
+            # check for rounded dbcells coords not in rounded calc coords
+            not_in = []
+            for coord in dbcell_round:
+                if coord not in calc_round:
+                    not_in.append(coord)
+                    break
+
+            if len(not_in) == 0:
+                # confirm num unique remains same in rounded calc set
+                if len(set(calc_round)) == len(set(calc_arr)):
+                    return dbcell_round, calc_round
+        return None, None
+
+    y_true_round, y_calc_round = _get_round(dbcells_y, y_calc)
+    x_true_round, x_calc_round = _get_round(dbcells_x, x_calc)
+    assert (
+        x_true_round is not None and x_calc_round is not None
+    ), "X rounding procedure failed"
+    assert (
+        y_true_round is not None and y_calc_round is not None
+    ), "Y rounding procedure failed"
+
+    coords = {
+        "x": {
+            "true": dbcells_x,
+            "true_round": x_true_round,
+            "calc": x_calc,
+            "calc_round": x_calc_round,
+        },
+        "y": {
+            "true": dbcells_y,
+            "true_round": y_true_round,
+            "calc": y_calc,
+            "calc_round": y_calc_round,
+        },
+    }
+    return coords
 
 
-def gdbn_to_netcdf(gdbn: Path, out_netcdf: Path, project: str = "") -> Path:
+def get_template(meta, x_calc_round, y_calc_round):
+
+    shape = (meta["row_num"], meta["col_num"])
+    da_template = xr.DataArray(
+        np.zeros(shape=shape),
+        dims=["lat", "lon"],
+        coords={"lat": y_calc_round, "lon": x_calc_round},
+        name="da_template",
+    )
+
+    return da_template
+
+
+def gdbn_to_netcdf_alt(gdbn: Path, out_netcdf: Path, project: str = "") -> Path:
 
     """Convert .gdbn rgis network to netcdf network compatible with rgispy
 
@@ -343,13 +381,13 @@ def gdbn_to_netcdf(gdbn: Path, out_netcdf: Path, project: str = "") -> Path:
     crs4326 = crs.CRS.from_wkt(WKT)
 
     dbcells = LoadDBCells(gdbn)
-    xcoords, roundX, ycoords, roundY, da_template = calc_rounded_coords(gdbn)
+    meta = get_network_meta(gdbn)
 
-    dbcells["RoundCellXCoord"] = dbcells.CellXCoord.map(
-        lambda x: round(x, ndigits=roundX)
+    coords = get_round_coords(
+        dbcells.CellXCoord.unique(), dbcells.CellYCoord.unique(), meta
     )
-    dbcells["RoundCellYCoord"] = dbcells.CellYCoord.map(
-        lambda y: round(y, ndigits=roundY)
+    da_template = get_template(
+        meta, coords["x"]["calc_round"], coords["y"]["calc_round"]
     )
 
     for var, encoding in OUT_ENCODING.items():
@@ -361,7 +399,7 @@ def gdbn_to_netcdf(gdbn: Path, out_netcdf: Path, project: str = "") -> Path:
         OUT_ENCODING[var]["dtype"] = dtype
         OUT_ENCODING[var]["_FillValue"] = fill
 
-        da = get_dbcells_component_da(da_template, xcoords, ycoords, dbcells, var)
+        da = get_dbcells_component_da(da_template, coords, dbcells, var)
 
         da.rio.set_spatial_dims(y_dim="lat", x_dim="lon", inplace=True)
         da.rio.write_crs(crs4326, inplace=True)
@@ -378,6 +416,77 @@ def gdbn_to_netcdf(gdbn: Path, out_netcdf: Path, project: str = "") -> Path:
     )
 
     # TODO: decouple ds creation from netcdf saving
+    ds.to_netcdf(out_netcdf, encoding=OUT_ENCODING)
+    return out_netcdf
+
+
+def gdbn_to_netcdf_base(in_gdbn: Path, out_netcdf: Path, project: str = "") -> Path:
+
+    """Convert .gdbn rgis network to netcdf network compatible with rgispy
+    Raises:
+        Exception: unable to encode maximum value
+        Exception: unable to encode maximum value
+    Returns:
+        Path: Path to created netcdf network
+    """
+    import rasterio.crs as crs
+    import rioxarray  # noqa
+
+    # We define the CRS for the output NetCDF
+    wkt = 'GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563,AUTHORITY["EPSG","7030"]],AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.01745329251994328,AUTHORITY["EPSG","9122"]],AUTHORITY["EPSG","4326"]]'
+    crs4326 = crs.CRS.from_wkt(wkt)
+
+    # We read the data (can take a long time)
+    dfNet = LoadDBCells(in_gdbn)
+
+    # Create and empty xarray DataSet to add the xarrays as variables
+    ds = xr.Dataset()
+
+    # We process each variable individually (e.g. ToCell, Order etc.)
+    for var, encoding in OUT_ENCODING.items():
+        # Extract the column that we want from the pandas dataframe
+        # the column correcponded to the name of the variable
+        # We then pivot it using the coordinates columns as rows (Ys) and
+        # columns (Xs) headers
+        df_pv = dfNet[[var, "CellXCoord", "CellYCoord"]].pivot(
+            index="CellYCoord", columns="CellXCoord"
+        )
+
+        # Make sure that we have the smallest data type needed
+        max_val = dfNet[var].max() / encoding["scale_factor"]
+        min_val = dfNet[var].min()
+
+        # TODO: this without relying on a global dict modification <:l
+        dtype, fill = get_encoding(min_val, max_val)
+        OUT_ENCODING[var]["dtype"] = dtype
+        OUT_ENCODING[var]["_FillValue"] = fill
+
+        da = xr.DataArray(
+            data=df_pv.values,
+            dims=["lat", "lon"],
+            coords=[
+                dfNet["CellYCoord"].sort_values(ascending=True).unique(),
+                dfNet["CellXCoord"].sort_values(ascending=True).unique(),
+            ],
+        )
+        # And add the CRS (we use the rioxarray package...)
+        da.rio.set_spatial_dims(y_dim="lat", x_dim="lon", inplace=True)
+        da.rio.write_crs(crs4326, inplace=True)
+        da.assign_attrs(OUT_ATTR[var])
+        # We add the xarray to the xarray dataset
+        ds[var] = da
+
+    # Once all the variables are loaded into the xarray dataset we add
+    # dataset attributes
+    ds = ds.assign_attrs(
+        {
+            "WBM_network": in_gdbn.__str__(),
+            "project": project,
+            "crs": "+init=epsg:4326",
+            "creation_date": "{}".format(datetime.datetime.now()),
+        }
+    )
+    # And we save the xarray dataset as a netCDF
     ds.to_netcdf(out_netcdf, encoding=OUT_ENCODING)
     return out_netcdf
 

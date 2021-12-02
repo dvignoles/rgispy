@@ -1,12 +1,13 @@
 import datetime
 
+# Type Hints
+from io import StringIO
+
 import numpy as np
 from xarray.core.dataarray import DataArray as xarray_da
-
-# Type Hints
 from xarray.core.dataset import Dataset as xarray_ds
 
-from .grid import get_buffer_cells, non_nan_cells
+from .grid import count_non_nan, get_buffer_cells, non_nan_cells
 from .network import get_all_basin_mouth
 
 
@@ -69,6 +70,62 @@ def get_mask_ds(network: xarray_ds) -> xarray_ds:
         }
     )
     return mask_ds
+
+
+def mask_set_attrs(
+    mask,
+    description="",
+    wbm_filename="",
+    wbm_fieldname="",
+    processing_type="",
+    mask_type="Point",
+):
+    mask.attrs["description"] = description
+    mask.attrs["WBM_filename"] = wbm_filename
+    mask.attrs["WBM_fieldname"] = wbm_fieldname
+    mask.attrs["Processing type"] = processing_type
+    mask.attrs["Type"] = mask_type
+
+    mask.attrs["Number Cells Occupied"] = count_non_nan(mask.data)
+    if mask_type.lower() == "polygon":
+        mask.attrs["Number Polygons"] = len(np.unique(mask.data[~np.isnan(mask.data)]))
+
+    return mask
+
+
+def mask_set_att_table(mask, att_table):
+    mask.attrs[
+        "How to use stored Attribute Tables"
+    ] = "Import as pandas dataframe using command: pd.read_csv(StringIO(<xArray>.attrs['Attribute Table']),sep='\t')"
+    out_buf = StringIO()
+    att_table.to_csv(out_buf, sep="\t", index=False)
+    mask.attrs["Attribute Table"] = out_buf.getvalue()
+    return mask
+
+
+def get_point_mask_from_df(
+    df,
+    network,
+    description="",
+    values="WBM IDs for layer",
+    wbm_filename="",
+    wbm_fieldname="",
+    processing_type="",
+    mask_type="Point",
+):
+    cellids = df.CellID.unique()
+
+    mask = network.where(network["ID"].isin(cellids))["ID"]
+    mask = mask_set_attrs(
+        mask,
+        description=description,
+        wbm_filename=wbm_filename,
+        wbm_fieldname=wbm_fieldname,
+        processing_type=processing_type,
+        mask_type=mask_type,
+    )
+    mask = mask_set_att_table(mask, df)
+    return mask
 
 
 def _mask_buffer_single(network, buffer, mask, lati, loni):

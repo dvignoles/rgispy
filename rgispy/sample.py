@@ -385,6 +385,7 @@ def iter_ds(
         # We add a NoData entry at the beginning of the data array, so that
         # ID = 0 (e.g. the NoData values of the rgis network) will map to NoData...
         Data = np.insert(Data, 0, NoData)
+
         Data = Data[cell_id.flatten()].reshape(cell_id.shape)
         if rgisType <= 6:
             _ = Data.astype("float")
@@ -458,17 +459,22 @@ def sample_ds(
                     cell_area is not None
                 ), "Cell Area required to weight polygon averages"
 
+                # exclude nan values from mean/min/max determination
+                mData = np.ma.MaskedArray(
+                    Data, mask=np.isnan(Data)
+                )  # type: np.ma.MaskedArray
+
                 dstr = Date.strftime("%Y-%m-%d")
                 dfOut["mean_{}".format(dstr)] = [
                     # Mean weighted by cell area
-                    np.average(Data[Mask == i], weights=cell_area[Mask == i])
+                    np.ma.average(mData[Mask == i], weights=cell_area[Mask == i])
                     for i in MaskValues
                 ]
                 dfOut["min_{}".format(dstr)] = [
-                    Data[Mask == i].min() for i in MaskValues
+                    np.ma.min(mData[Mask == i]) for i in MaskValues
                 ]
                 dfOut["max_{}".format(dstr)] = [
-                    Data[Mask == i].max() for i in MaskValues
+                    np.ma.max(mData[Mask == i]) for i in MaskValues
                 ]
             elif MaskType == "Point":
                 dfOut[Date] = pd.DataFrame(

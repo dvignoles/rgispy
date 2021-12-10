@@ -6,16 +6,23 @@ import subprocess as sp
 from io import StringIO
 from math import ceil, isnan
 from pathlib import Path
-from typing import Any, Optional
+
+# Type Hints
+from typing import Any, Optional, Union
 
 import numpy as np
 import pandas as pd
 import xarray as xr
 
-# Type Hints
-from xarray.core.dataset import Dataset as xarray_ds
-
 from .grid import count_non_nan, non_nan_cells
+
+# type aliases
+numeric = Union[int, float, np.number]
+array = Union[list, tuple, np.ndarray, pd.Series]
+file_loc = Union[str, Path]
+xarray_ds = xr.core.dataset.Dataset
+xarray_da = xr.core.dataarray.DataArray
+
 
 if "GHAASDIR" in os.environ:
     Dir2Ghaas = os.environ["GHAASDIR"]
@@ -92,7 +99,15 @@ OUT_ATTR = {
 }
 
 
-def get_encoding(min_val, max_val):
+def get_encoding(min_val: numeric, max_val: numeric) -> tuple[str, int]:
+    """Get best encoding type and fill number.
+
+    Args:
+        min_val (numeric): minimum value of data to encode
+        max_val (numeric): maximum value of data to encode
+    Returns:
+        tuple[str, int]: (encoding name, fill value)
+    """
     if min_val >= 0:  # if all values are positive, we can use unsigned integers
         if max_val < 255:
             return "uint8", 255
@@ -125,9 +140,15 @@ def get_encoding(min_val, max_val):
             )
 
 
-def LoadDBCells(in_gdbn):
-    # Adds the X and Y columns to the DBCells table and loads the network
-    # DBCells table into a Pandas DataFrame
+def load_dbcells(in_gdbn: file_loc) -> pd.DataFrame:
+    """Get the 'dbcells' table from a network containing cells and their attributes.
+
+    Args:
+        in_gdbn (file_loc): gdbn network file
+
+    Returns:
+        pd.DataFrame: table of cells
+    """
 
     cmd1 = [Dir2Ghaas + "/bin/tblAddXY", "-a", "DBCells", in_gdbn, "-"]
     cmd2 = [Dir2Ghaas + "/bin/rgis2table", "-a", "DBCells", "-"]
@@ -141,10 +162,18 @@ def LoadDBCells(in_gdbn):
     return df_out
 
 
-def _ReadDBLayers(inFile):
+def load_dblayers(inFile: file_loc) -> pd.DataFrame:
+    """Read in 'dblayers' info from rgis file. Contains georeferencing informatin.
+
+    Args:
+        inFile (file_loc): rgis compatible file
+
+    Returns:
+        pd.DataFrame: table with number of rows, cols, cell width etc.
+    """
     cmd = [Dir2Ghaas + "/bin/rgis2table", "-a", "DBLayers", inFile]
     proc = sp.Popen(cmd, stdout=sp.PIPE)  # , shell=True) +inFile
-    data1 = StringIO(bytearray(proc.stdout.read()).decode("utf-8"))
+    data1 = StringIO(bytearray(proc.stdout.read()).decode("utf-8"))  # type: ignore
     Layers = pd.read_csv(
         data1,
         sep="\t",
@@ -163,11 +192,20 @@ def _ReadDBLayers(inFile):
     return Layers
 
 
-def _LoadGeo(name, compressed):
+def _load_geo(name: file_loc, compressed: bool) -> tuple[numeric, numeric, dict]:
+    """Get origin and metadata from rgis file.
+
+    Args:
+        name (file_loc): rgis compatible file
+        compressed (bool): whether or not gzip compressed
+
+    Returns:
+        tuple[numeric, numeric, dict]: lower left x, lower left y, metadata
+    """
     if compressed:
         ifile = gzip.open(name, "rb")
     else:
-        ifile = open(name, "rb")
+        ifile = open(name, "rb")  # type: ignore
     ifile.seek(40)
     LLx = struct.unpack("d", ifile.read(8))[0]
     LLy = struct.unpack("d", ifile.read(8))[0]
@@ -200,9 +238,17 @@ def _LoadGeo(name, compressed):
     return LLx, LLy, MetaData
 
 
-def get_network_meta(gdbn):
-    llx, lly, metadata = _LoadGeo(gdbn, True)
-    layers = _ReadDBLayers(gdbn)
+def get_meta(gdbn: file_loc) -> dict[str, numeric]:
+    """Get geospatial meta data from rgis network.
+
+    Args:
+        gdbn (file_loc): gbdn rgis network
+
+    Returns:
+        dict: dict(llx, lly, col_num, row_num, cell_width, cell_height)
+    """
+    llx, lly, _ = _load_geo(gdbn, True)
+    layers = load_dblayers(gdbn)
 
     meta = dict(
         llx=llx,
@@ -215,12 +261,96 @@ def get_network_meta(gdbn):
     return meta
 
 
-def get_dbcells_component_da(
-    da_template,
-    coords,
-    dbcells,
-    name,
-):
+def get_round_coords(
+    dbcells_x: array, dbcells_y: array, meta: dict[str, numeric]
+) -> dict[str, dict[str, array]]:
+    """Get coordinates (rounded and unrounded) from dbcells and based on dblayers meta.
+
+    Args:
+        dbcells_x (array): unique x coordinates from dbcells
+        dbcells_y (array): unique y coordinates from dbcells
+        meta (dict[str, numeric]):
+
+    Returns:
+        dict[str, dict[str, array]]: [description]
+    """
+
+    inX = meta["llx"] + meta["cell_width"] / 2.0
+    inY = meta["lly"] + meta["cell_height"] / 2.0
+    x_calc = [
+        inX + meta["cell_width"] * float(n) for n in range(0, meta["col_num"])  # type: ignore
+    ]
+    y_calc = [
+        inY + meta["cell_height"] * float(n) for n in range(0, meta["row_num"])  # type: ignore
+    ]
+
+    def _get_round(dbcells_arr, calc_arr):
+        for i in range(1, 10):
+
+            # ceil function minimizes risk of rounding mismatch due to floating point precision
+            # ie. decimals ending in 5 round down becasue they are internally represented 0.5 ~= .49999999
+            def func(x):
+                return ceil(round(x, i) * 100)
+
+            dbcell_round = list(map(func, dbcells_arr))
+            calc_round = list(map(func, calc_arr))
+
+            # check for rounded dbcells coords not in rounded calc coords
+            not_in = []
+            for coord in dbcell_round:
+                if coord not in calc_round:
+                    not_in.append(coord)
+                    break
+
+            if len(not_in) == 0:
+                # confirm num unique remains same in rounded calc set
+                if len(set(calc_round)) == len(set(calc_arr)):
+                    return dbcell_round, calc_round
+        return None, None
+
+    y_true_round, y_calc_round = _get_round(dbcells_y, y_calc)
+    x_true_round, x_calc_round = _get_round(dbcells_x, x_calc)
+    assert (
+        x_true_round is not None and x_calc_round is not None
+    ), "X rounding procedure failed"
+    assert (
+        y_true_round is not None and y_calc_round is not None
+    ), "Y rounding procedure failed"
+
+    coords = {
+        "x": {
+            "true": dbcells_x,
+            "true_round": x_true_round,
+            "calc": x_calc,
+            "calc_round": x_calc_round,
+        },
+        "y": {
+            "true": dbcells_y,
+            "true_round": y_true_round,
+            "calc": y_calc,
+            "calc_round": y_calc_round,
+        },
+    }
+    return coords
+
+
+def _get_dbcells_component_da(
+    da_template: xarray_da,
+    coords: dict,
+    dbcells: pd.DataFrame,
+    name: str,
+) -> xarray_da:
+    """Get the DataArray for an attribute of a network (ID, cell_area, order, etc.) using the 'round-matching approach'.
+
+    Args:
+        da_template (xarray_da): empty dataarray with correct shape (from dblayers) and 'calculated' x/y coordinates
+        coords (dict): output of get_round_coords (true, true_round, calc, calc_round)
+        dbcells (pd.DataFrame): dbcells table from load_db_cells
+        name (str): column of dbcells
+
+    Returns:
+        xarray_da: [description]
+    """
     piv = dbcells[[name, "CellXCoord", "CellYCoord"]].pivot(
         index="CellYCoord", columns="CellXCoord"
     )
@@ -230,8 +360,8 @@ def get_dbcells_component_da(
         data=piv.values,
         dims=["lat", "lon"],
         coords=[
-            sorted(coords["y"]["true_round"]),
-            sorted(coords["x"]["true_round"]),
+            sorted(coords["y"]["true_round"]),  # type: ignore
+            sorted(coords["x"]["true_round"]),  # type: ignore
         ],
         name="da_temp",
     )
@@ -239,7 +369,9 @@ def get_dbcells_component_da(
     # merge with desired template shape
     da = xr.merge([da_template, da_temp], join="left")["da_temp"]
 
-    assert count_non_nan(piv) == count_non_nan(da), "mismatch between rounded coords"
+    assert count_non_nan(piv.values) == count_non_nan(
+        da.data
+    ), "mismatch between rounded coords"
 
     # dbcells rounded_coord -> dbcells actual coord
     x_cell_lookup = pd.DataFrame(
@@ -293,79 +425,17 @@ def get_dbcells_component_da(
     return da
 
 
-def get_round_coords(dbcells_x, dbcells_y, meta):
-
-    inX = meta["llx"] + meta["cell_width"] / 2.0
-    inY = meta["lly"] + meta["cell_height"] / 2.0
-    x_calc = [inX + meta["cell_width"] * float(n) for n in range(0, meta["col_num"])]
-    y_calc = [inY + meta["cell_height"] * float(n) for n in range(0, meta["row_num"])]
-
-    def _get_round(dbcells_arr, calc_arr):
-        for i in range(1, 10):
-
-            # ceil function minimizes risk of rounding mismatch due to floating point precision
-            # ie. decimals ending in 5 round down becasue they are internally represented 0.5 ~= .49999999
-            def func(x):
-                return ceil(round(x, i) * 100)
-
-            dbcell_round = list(map(func, dbcells_arr))
-            calc_round = list(map(func, calc_arr))
-
-            # check for rounded dbcells coords not in rounded calc coords
-            not_in = []
-            for coord in dbcell_round:
-                if coord not in calc_round:
-                    not_in.append(coord)
-                    break
-
-            if len(not_in) == 0:
-                # confirm num unique remains same in rounded calc set
-                if len(set(calc_round)) == len(set(calc_arr)):
-                    return dbcell_round, calc_round
-        return None, None
-
-    y_true_round, y_calc_round = _get_round(dbcells_y, y_calc)
-    x_true_round, x_calc_round = _get_round(dbcells_x, x_calc)
-    assert (
-        x_true_round is not None and x_calc_round is not None
-    ), "X rounding procedure failed"
-    assert (
-        y_true_round is not None and y_calc_round is not None
-    ), "Y rounding procedure failed"
-
-    coords = {
-        "x": {
-            "true": dbcells_x,
-            "true_round": x_true_round,
-            "calc": x_calc,
-            "calc_round": x_calc_round,
-        },
-        "y": {
-            "true": dbcells_y,
-            "true_round": y_true_round,
-            "calc": y_calc,
-            "calc_round": y_calc_round,
-        },
-    }
-    return coords
-
-
-def get_template(meta, x_calc_round, y_calc_round):
-
-    shape = (meta["row_num"], meta["col_num"])
-    da_template = xr.DataArray(
-        np.zeros(shape=shape),
-        dims=["lat", "lon"],
-        coords={"lat": y_calc_round, "lon": x_calc_round},
-        name="da_template",
-    )
-
-    return da_template
-
-
 def gdbn_to_netcdf_alt(gdbn: Path, out_netcdf: Path, project: str = "") -> Path:
 
-    """Convert .gdbn rgis network to netcdf network compatible with rgispy
+    """Convert .gdbn rgis network to netcdf network compatible with rgispy with alternate 'round-matching' method. Needed when dimensions of dbcells
+    do not match true diemensions of network.
+
+    round-matching pseudo algorithm
+    1. Get coords from dbcells (true)
+    2. Calculate expected coords based on origin, dimensions, and cell size (calculated)
+    3. Round true and calculated with maintaining coordinate uniqueness
+    4. Match Rounded true with Rounded calcualte.
+    5. Where There is not a match use calculated coord. Where there is a match, use true coord.
 
     Raises:
         Exception: unable to encode maximum value
@@ -380,14 +450,21 @@ def gdbn_to_netcdf_alt(gdbn: Path, out_netcdf: Path, project: str = "") -> Path:
     ds = xr.Dataset()
     crs4326 = crs.CRS.from_wkt(WKT)
 
-    dbcells = LoadDBCells(gdbn)
-    meta = get_network_meta(gdbn)
+    dbcells = load_dbcells(gdbn)
+    meta = get_meta(gdbn)
 
+    # Get all coordinate values (true, true_round, calc, calc_round)
     coords = get_round_coords(
         dbcells.CellXCoord.unique(), dbcells.CellYCoord.unique(), meta
     )
-    da_template = get_template(
-        meta, coords["x"]["calc_round"], coords["y"]["calc_round"]
+
+    # Template output for matching process
+    shape = (meta["row_num"], meta["col_num"])
+    da_template = xr.DataArray(
+        np.zeros(shape=shape),  # type: ignore
+        dims=["lat", "lon"],
+        coords={"lat": coords["y"]["calc_round"], "lon": coords["x"]["calc_round"]},
+        name="da_template",
     )
 
     for var, encoding in OUT_ENCODING.items():
@@ -399,7 +476,7 @@ def gdbn_to_netcdf_alt(gdbn: Path, out_netcdf: Path, project: str = "") -> Path:
         OUT_ENCODING[var]["dtype"] = dtype
         OUT_ENCODING[var]["_FillValue"] = fill
 
-        da = get_dbcells_component_da(da_template, coords, dbcells, var)
+        da = _get_dbcells_component_da(da_template, coords, dbcells, var)
 
         da.rio.set_spatial_dims(y_dim="lat", x_dim="lon", inplace=True)
         da.rio.write_crs(crs4326, inplace=True)
@@ -437,7 +514,7 @@ def gdbn_to_netcdf_base(in_gdbn: Path, out_netcdf: Path, project: str = "") -> P
     crs4326 = crs.CRS.from_wkt(wkt)
 
     # We read the data (can take a long time)
-    dfNet = LoadDBCells(in_gdbn)
+    dfNet = load_dbcells(in_gdbn)
 
     # Create and empty xarray DataSet to add the xarrays as variables
     ds = xr.Dataset()

@@ -9,6 +9,7 @@ python_version = "3.9"
 [packages]
 rasterio = "*"
 rioxarray = "*"
+rgispy = {editable = true, path = "."}
 
 [dev-packages]
 black = "==20.8b1"

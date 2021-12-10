@@ -6,26 +6,43 @@ import xarray as xr
 from .network import lookup_cellid
 
 
-def join_sampled_files(part_files: list[Path]) -> pd.DataFrame:
+def join_sampled_files(
+    part_files: list[Path], index_name="cellid", polygon_stat=None
+) -> pd.DataFrame:
     """Join list of sampled files into one dataframe in wide pivot format.
 
     Args:
         part_files (list[Path]): list-like of sampled files (Discharge_1990.csv, Discharge_1991.csv ...)
+        index_name (str, optional): name to give index. Defaults to 'cellid'.
+        polygon_stat (str, optional): one of mean, min, max. If polygon sampled file, will sample out that stat only.
 
     Returns:
         pd.DataFrame: pandas dataframe in wide form (columns are dates)
     """
 
-    part_dfs = [pd.read_csv(f, index_col=0) for f in part_files]
+    _usecols = None
+    if polygon_stat is not None:
+        # filter to specific stat column
+        assert polygon_stat.lower() in ["mean", "min", "max"]
+
+        def _usecols(x):
+            return polygon_stat in x.lower() or x == "Unnamed: 0"
+
+    part_dfs = [pd.read_csv(f, index_col=0, usecols=_usecols) for f in part_files]
     df = pd.concat(part_dfs, axis=1)
+
+    if polygon_stat is not None:
+        # remove stat prefixes from column names
+        df.rename(columns={c: c.split("_")[1] for c in df.columns}, inplace=True)
+
     df.index.names = [
-        "cellid",
+        index_name,
     ]
     return df
 
 
 def stack_sampled_df(
-    sampled_df: pd.DataFrame, variable: str, index_name="cellid"
+    sampled_df: pd.DataFrame, variable: str, index_name="cellid", zonal=False
 ) -> pd.DataFrame:
     """Stack pivoted dataframe (wide form to long form).
 
@@ -44,7 +61,9 @@ def stack_sampled_df(
 
     # fix index
     df.reset_index(inplace=True)
+
     df["date"] = pd.to_datetime(df.date)
+
     df.set_index([index_name, "date"], inplace=True)
     df = df.sort_index()
     return df

@@ -464,7 +464,14 @@ def sample_ds(
                     Data, mask=np.isnan(Data)
                 )  # type: np.ma.MaskedArray
 
-                dstr = Date.strftime("%Y-%m-%d")
+                date_format = get_date_format(time_step)
+                if date_format is not None:
+                    # daily / monthly annual
+                    dstr = Date.strftime(date_format)
+                else:
+                    # alt - XXXX, dlt - XXXX-01-01
+                    dstr = Date  # type: ignore
+
                 dfOut["mean_{}".format(dstr)] = [
                     # Mean weighted by cell area
                     np.ma.average(mData[Mask == i], weights=cell_area[Mask == i])

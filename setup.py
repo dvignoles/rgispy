@@ -12,7 +12,7 @@ setup(
     install_requires=[
         "numpy",
         "pandas",
-        # "GDAL",
+        "GDAL",
         "xarray",
         "rasterio",
         "rioxarray",

@@ -6,11 +6,6 @@ python 3.9 required
 pip install git+git://github.com/dvignoles/rgispy@main
 ```
 
-## Console Scripts
-* sampleDs
-* gdbnToNetcdf
-* sampleGdbc
-
 ## Developer Setup
 ```sh
 # Install dependencies

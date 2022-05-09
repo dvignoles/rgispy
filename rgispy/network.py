@@ -13,6 +13,7 @@ from typing import Any, Optional, Union
 import numpy as np
 import pandas as pd
 import xarray as xr
+from affine import Affine
 
 from .grid import count_non_nan, non_nan_cells
 
@@ -249,14 +250,19 @@ def get_meta(gdbn: file_loc) -> dict[str, numeric]:
     """
     llx, lly, _ = _load_geo(gdbn, True)
     layers = load_dblayers(gdbn)
+    cell_width = layers[["CellWidth"]].values.tolist()[0][0]
+    cell_height = layers[["CellHeight"]].values.tolist()[0][0]
+
+    aff = str(Affine.from_gdal(llx, cell_width, 0.0, lly, 0.0, cell_height).to_gdal())
 
     meta = dict(
         llx=llx,
         lly=lly,
         col_num=layers[["ColNum"]].values.tolist()[0][0],
         row_num=layers[["RowNum"]].values.tolist()[0][0],
-        cell_width=layers[["CellWidth"]].values.tolist()[0][0],
-        cell_height=layers[["CellHeight"]].values.tolist()[0][0],
+        cell_width=cell_width,
+        cell_height=cell_height,
+        affine=aff,
     )
     return meta
 
@@ -277,12 +283,8 @@ def get_round_coords(
 
     inX = meta["llx"] + meta["cell_width"] / 2.0
     inY = meta["lly"] + meta["cell_height"] / 2.0
-    x_calc = [
-        inX + meta["cell_width"] * float(n) for n in range(0, meta["col_num"])  # type: ignore
-    ]
-    y_calc = [
-        inY + meta["cell_height"] * float(n) for n in range(0, meta["row_num"])  # type: ignore
-    ]
+    x_calc = [inX + meta["cell_width"] * float(n) for n in range(0, meta["col_num"])]  # type: ignore
+    y_calc = [inY + meta["cell_height"] * float(n) for n in range(0, meta["row_num"])]  # type: ignore
 
     def _get_round(dbcells_arr, calc_arr):
         for i in range(1, 10):
@@ -483,15 +485,17 @@ def gdbn_to_netcdf_alt(gdbn: Path, out_netcdf: Path, project: str = "") -> Path:
         da.assign_attrs(OUT_ATTR[var])
         ds[var] = da
 
-    ds = ds.assign_attrs(
-        {
-            "WBM_network": gdbn.__str__(),
-            "project": project,
-            "crs": "+init=epsg:4326",
-            "creation_date": "{}".format(datetime.datetime.now()),
-        }
-    )
+    attrs = {
+        "WBM_network": gdbn.__str__(),
+        "project": project,
+        "crs": "+init=epsg:4326",
+        "creation_date": "{}".format(datetime.datetime.now()),
+    }
 
+    for k in meta.keys():
+        attrs[k] = meta[k]  # type: ignore
+
+    ds = ds.assign_attrs(attrs)
     # TODO: decouple ds creation from netcdf saving
     ds.to_netcdf(out_netcdf, encoding=OUT_ENCODING)
     return out_netcdf
@@ -512,6 +516,8 @@ def gdbn_to_netcdf_base(in_gdbn: Path, out_netcdf: Path, project: str = "") -> P
     # We define the CRS for the output NetCDF
     wkt = 'GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563,AUTHORITY["EPSG","7030"]],AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.01745329251994328,AUTHORITY["EPSG","9122"]],AUTHORITY["EPSG","4326"]]'
     crs4326 = crs.CRS.from_wkt(wkt)
+
+    meta = get_meta(in_gdbn)
 
     # We read the data (can take a long time)
     dfNet = load_dbcells(in_gdbn)
@@ -555,14 +561,17 @@ def gdbn_to_netcdf_base(in_gdbn: Path, out_netcdf: Path, project: str = "") -> P
 
     # Once all the variables are loaded into the xarray dataset we add
     # dataset attributes
-    ds = ds.assign_attrs(
-        {
-            "WBM_network": in_gdbn.__str__(),
-            "project": project,
-            "crs": "+init=epsg:4326",
-            "creation_date": "{}".format(datetime.datetime.now()),
-        }
-    )
+    attrs = {
+        "WBM_network": in_gdbn.__str__(),
+        "project": project,
+        "crs": "+init=epsg:4326",
+        "creation_date": "{}".format(datetime.datetime.now()),
+    }
+
+    for k in meta.keys():
+        attrs[k] = meta[k]  # type: ignore
+
+    ds = ds.assign_attrs(attrs)
     # And we save the xarray dataset as a netCDF
     ds.to_netcdf(out_netcdf, encoding=OUT_ENCODING)
     return out_netcdf

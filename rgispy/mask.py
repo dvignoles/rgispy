@@ -4,6 +4,8 @@ import datetime
 from io import StringIO
 
 import numpy as np
+import rasterio as rio
+from affine import Affine
 from xarray.core.dataarray import DataArray as xarray_da
 from xarray.core.dataset import Dataset as xarray_ds
 
@@ -125,6 +127,71 @@ def get_point_mask_from_df(
         mask_type=mask_type,
     )
     mask = mask_set_att_table(mask, df)
+    return mask
+
+
+def gdf_mask(gdf, network_xr) -> np.ndarray:
+
+    assert 0 not in gdf.ID, "ID cannot be zero indexed"
+    shp_shapes = gdf[["ID", "geometry"]].to_records(index=False)
+
+    cell_sum = 0
+    mask_shape = network_xr["ID"].shape
+    aff = Affine.from_gdal(*eval(network_xr.affine))
+
+    # zeros used to additively create mask
+    final_mask = np.zeros(mask_shape)
+    for ind, shape in shp_shapes:
+        shp_mask = rio.features.geometry_mask(
+            [
+                shape,
+            ],
+            mask_shape,
+            aff,
+            all_touched=False,
+            invert=True,
+        )
+        cell_sum += count_non_nan(network_xr["ID"].data[shp_mask])
+
+        mask = np.zeros(mask_shape)
+        mask[shp_mask] = ind
+        final_mask = np.sum([final_mask, mask], axis=0)
+
+    # set remaining zeros to nan
+    final_mask[final_mask == 0] = np.nan
+    assert cell_sum == count_non_nan(
+        final_mask
+    ), f"{cell_sum} != {count_non_nan(final_mask)}"
+
+    return final_mask
+
+
+def get_polygon_mask_from_gdf(
+    gdf,
+    network_xr,
+    description="",
+    values="WBM IDs for layer",
+    wbm_filename="",
+    wbm_fieldname="",
+    processing_type="",
+    mask_type="Polygon",
+):
+
+    mask_nd = gdf_mask(gdf, network_xr)
+    mask = network_xr["ID"].copy()
+    mask.data = mask_nd
+
+    mask = mask_set_attrs(
+        mask,
+        description=description,
+        wbm_filename=wbm_filename,
+        wbm_fieldname=wbm_fieldname,
+        processing_type=processing_type,
+        mask_type=mask_type,
+    )
+
+    non_geom_cols = [c for c in gdf.columns if c != "geometry"]
+    mask = mask_set_att_table(mask, gdf[non_geom_cols])
     return mask
 
 

@@ -219,7 +219,7 @@ def gdbc_to_ds_buffer(gdbc: Path, network: Path) -> Optional[IO[bytes]]:
     Returns:
         BinaryIO: buffered reader of output datastream
     """
-    cmd = "rgis2ds --template {network} {gdbc}".format(
+    cmd = "/usr/local/share/ghaas/bin/rgis2ds --template {network} {gdbc}".format(
         network=network, gdbc=gdbc
     ).split()
     p = sp.Popen(cmd, stdout=sp.PIPE)

@@ -114,8 +114,9 @@ def get_point_mask_from_df(
     wbm_fieldname="",
     processing_type="",
     mask_type="Point",
+    cell_id_col="CellID",
 ):
-    cellids = df.CellID.unique()
+    cellids = df[cell_id_col].unique()
 
     mask = network.where(network["ID"].isin(cellids))["ID"]
     mask = mask_set_attrs(

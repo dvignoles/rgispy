@@ -253,7 +253,7 @@ class Rgis:
         stdout: int,
         extent: Path,
         interpolate="surface",
-        var_exprs: list[tuple[str, str]] = None,
+        var_exprs: list[tuple[str]] = None,
         title: str = None,
         subject: str = None,
         domain: str = None,
@@ -266,7 +266,7 @@ class Rgis:
             stdout (int): subprocess stdout encoding ex: sp.PIPE
             extent (Path): RGIS coverage to use as bounding box of output
             interpolate (str, optional): [surface|flat] interpolation method. Defaults to "surface".
-            var_exprs (list[tuple[str, str]], optional): sub expressions to use as variables in main expression. Defaults to None.
+            var_exprs (list[tuple[str]], optional): sub expressions to use as variables in main expression. Defaults to None.
             title (str, optional): RGIS metadata title. Defaults to None.
             subject (str, optional): RIGS metadata subject. Defaults to None.
             domain (str, optional): RGIS metadata domain. Defaults to None.
@@ -292,7 +292,7 @@ class Rgis:
             for ve in var_exprs:
                 cmd.append("-r")
                 cmd.append(ve[0])
-                cmd.append(self._clean_expr(ve[1]))
+                cmd.append(self._clean_expr(ve[1]))  # type: ignore
 
         cmd.append("-c")
         cmd.append(self._clean_expr(expression))

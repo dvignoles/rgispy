@@ -64,7 +64,7 @@ def test_get_buffer_values(network):
 
 
 def test_pre_snap_stats(network):
-    stats = snap.pre_snap_stats(
-        (-95.835, 41.357), 2300, network["SubbasinArea"], radius=1
-    )
-    assert int(stats["best_val"]) == 2312
+    target = ("STNCatchmentArea", 2300, network["SubbasinArea"])
+    supplements = ("Order", 7, network["Order"])
+    stats = snap.pre_snap_stats((-95.835, 41.357), target, supplements, radius=1)
+    assert int(stats["STNCatchmentArea_snap_val"]) == 2312

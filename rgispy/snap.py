@@ -15,6 +15,7 @@ from .wrap import Rgis
 xarray_ds = xr.core.dataset.Dataset
 xarray_da = xr.core.dataarray.DataArray
 coordinate = tuple[float, float]
+snap_pair = tuple[str, float, xarray_da]
 
 
 def get_cell(
@@ -190,9 +191,6 @@ abs_symmetric_dif = partial(symmetric_dif, absolute=True)
 def cartesian_distance(x1, y1, x2, y2):
     d = (((x2 - x1) ** 2) + ((y2 - y1) ** 2)) ** (1 / 2)
     return d
-
-
-snap_pair = tuple[str, float, xarray_da]
 
 
 def ensure_iter(x):
@@ -504,7 +502,7 @@ def assert_gdf(gdf, columns):
 def snap_gdf(
     gdf,
     target_col,
-    supplement_cols,
+    supplement_cols=None,
     radius=1,
     tolerance=0.05,
     adjust_outside_tolerance=False,

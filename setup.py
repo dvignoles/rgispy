@@ -21,10 +21,10 @@ setup(
         "sqlalchemy",
         "geoalchemy2",
         "psycopg2",
+        "geopy",
     ],
     python_requires=">=3.9",
     entry_points={
-        "console_scripts": [
-        ],
+        "console_scripts": [],
     },
 )

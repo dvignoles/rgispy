@@ -522,6 +522,9 @@ def snap_gdf(
 
     # extract from attribute if it exists
     def _sup_from(rec, sup):
+        if sup[1] is None:
+            return None
+
         sup_from_exists = True if hasattr(rec, sup[1]) else False
         sup_from = rec[sup[1]] if sup_from_exists else None
         return sup_from

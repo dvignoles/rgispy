@@ -484,6 +484,7 @@ def do_snap(
         supplements = ensure_list(supplements)
         for sup_key, sup_from_val, sup_da in supplements:
             sup_val = sup_da[idx].data.tolist()
+
             result[f"{sup_key}{source_suffix}"] = (
                 sup_from_val if sup_from_val is not None else np.nan
             )
@@ -519,6 +520,12 @@ def snap_gdf(
     else:
         passthrough_cols = [c for c in gdf.columns if c != "geometry"]
 
+    # extract from attribute if it exists
+    def _sup_from(rec, sup):
+        sup_from_exists = True if hasattr(rec, sup[1]) else False
+        sup_from = rec[sup[1]] if sup_from_exists else None
+        return sup_from
+
     def _apply_snap(rec):
         coord = (rec.geometry.x, rec.geometry.y)
         target = (target_col[0], rec[target_col[1]], target_col[2])
@@ -531,7 +538,7 @@ def snap_gdf(
         kwargs = dict()
         if supplement_cols is not None:
             supplements = ensure_list(supplement_cols)
-            sups = [(sup[0], rec[sup[1]], sup[2]) for sup in supplements]
+            sups = [(sup[0], _sup_from(rec, sup), sup[2]) for sup in supplements]
             kwargs["supplements"] = sups
 
         kwargs["radius"] = radius

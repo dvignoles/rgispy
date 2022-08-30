@@ -7,9 +7,9 @@ The easiest way to get going is with conda. Nobody wants to fuss about with GDAL
 
 ```sh
 
-create -n rgispy numpy pandas GDAL xarray rasterio rioxarray netcdf4 geopandas sqlalchemy geoalchemy2 psycopg2
+create -n rgispy python=3.10 gdal
 
-pip install git+git://github.com/dvignoles/rgispy@main
+pip install git+https://github.com/dvignoles/rgispy@main
 ```
 
 ## Developer Setup

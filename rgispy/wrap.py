@@ -3,12 +3,87 @@
 import gzip
 import subprocess as sp
 import tempfile
-from io import StringIO
+import typing
+from functools import reduce
+from io import BufferedIOBase, StringIO
 from pathlib import Path
 
 import pandas as pd
 
 GIGABYTE = 1000000000
+
+# types of file objects supported
+ftype = typing.Union[bytes, Path, BufferedIOBase]
+
+
+def _check_ftype_code(f: ftype) -> int:
+    """Check if bytes, path, or file descriptor"""
+    # bytes
+    if isinstance(f, bytes) or f is None:
+        return 1
+    # Path
+    if isinstance(f, Path):
+        return 2
+    # binary file descriptor
+    if isinstance(f, BufferedIOBase):
+        return 3
+
+
+def _do_rgiscmd(cmd_configured, finput, foutput):
+    """Run rgis command as subprocess on variable file like types
+    (bytes, path, file descriptors)"""
+    finput_code = _check_ftype_code(finput)
+    foutput_code = _check_ftype_code(foutput)
+    print(finput_code, foutput_code)
+
+    # bytes/bytes PASSED
+    if finput_code == 1 and foutput_code == 1:
+        print(cmd_configured.split())
+        p = sp.run(cmd_configured.split(), input=finput, stdout=sp.PIPE)
+        return p.stdout
+    # bytes/Path PASSED
+    if finput_code == 1 and foutput_code == 2:
+        cmd_configured += f" - {foutput}"
+        p = sp.run(cmd_configured.split(), input=finput)
+        return foutput
+    # bytes/fd PASSED
+    if finput_code == 1 and foutput_code == 3:
+        foutput.seek(0)
+        p = sp.run(cmd_configured.split(), input=finput, stdout=foutput)
+        return None
+    # Path/bytes PASSED
+    if finput_code == 2 and foutput_code == 1:
+        cmd_configured += f" {finput}"
+        p = sp.run(cmd_configured.split(), stdout=sp.PIPE)
+        return p.stdout
+    # Path/Path PASSED
+    if finput_code == 2 and foutput_code == 2:
+        cmd_configured += f" {finput} {foutput}"
+        sp.run(cmd_configured.split())
+        return foutput
+    # Path/fd PASSED
+    if finput_code == 2 and foutput_code == 3:
+        foutput.seek(0)
+        cmd_configured += f" {finput}"
+        p = sp.run(cmd_configured.split(), stdout=foutput)
+        return None
+    # fd/bytes PASSED
+    if finput_code == 3 and foutput_code == 1:
+        finput.seek(0)
+        p = sp.run(cmd_configured.split(), stdin=finput, stdout=sp.PIPE)
+        return p.stdout
+    # fd/Path PASSED
+    if finput_code == 3 and foutput_code == 2:
+        finput.seek(0)
+        cmd_configured += f" - {foutput}"
+        p = sp.run(cmd_configured.split(), stdin=finput)
+        return foutput
+    # fd/fd PASSED
+    if finput_code == 3 and foutput_code == 3:
+        finput.seek(0)
+        foutput.seek(0)
+        p = sp.run(cmd_configured.split(), stdin=finput, stdout=foutput)
+        return None
 
 
 class Rgis:
@@ -18,43 +93,87 @@ class Rgis:
         else:
             self.ghaas_bin = Path(ghaas_bin)
 
-    def table2rgis(self, df: pd.DataFrame) -> bytes:
-        """Convert DataFrame to RGIS table (gdbt)
+    def run_rgiscmd(self, cmd, finput, flags=None, foutput=None):
+        cmd_path = self.ghaas_bin.joinpath(cmd)
+        flags_str = (
+            reduce(lambda x, y: f"{x} {y[0]} {y[1]}", flags, "")
+            if flags is not None
+            else None
+        )
 
-        Args:
-            df (pd.DataFrame): pandas DataFrame
+        if flags_str is not None:
+            cmd_configured = f"{cmd_path} {flags_str}"
+        else:
+            cmd_configured = f"{cmd_path}"
+        return _do_rgiscmd(cmd_configured, finput, foutput)
 
-        Returns:
-            bytes: In memory gdbt file
-        """
+
+class RgisTable(Rgis):
+    def __init__(self, fref: ftype, table_type: str = None, ghaas_bin=None):
+        super().__init__(ghaas_bin)
+        self._fref = fref
+        self.table_type = table_type
+        flags = [("-a", table_type)] if table_type is not None else None
+        # save table as bytes
+        self.table = self.run_rgiscmd("rgis2table", fref, flags=flags)
+
+    def df(self):
+        df = pd.read_csv(StringIO(self.table.decode()), sep="\t")
+        return df
+
+    @classmethod
+    def from_df(cls, df: pd.DataFrame, ghaas_bin=None):
         buf = StringIO()
         df.to_csv(buf, sep="\t")
 
-        cmd_path = self.ghaas_bin.joinpath("table2rgis")
-        cmd = f"{cmd_path}".split()
-        p = sp.Popen(cmd, stdin=sp.PIPE, stdout=sp.PIPE)
-        output, err = p.communicate(buf.getvalue().encode())
+        # probably not a clean method but it's simple
+        rgis = Rgis(ghaas_bin=ghaas_bin)
+        table = rgis.run_rgiscmd(
+            "table2rgis",
+            buf.getvalue().encode(),
+        )
 
-        return output
+        return cls(table)
 
-    def tblAddXY(
-        self, gdbp_bytes: bytes, x: str = "XCoord", y: str = "YCoord", table="DBItems"
-    ) -> bytes:
-        """Add Coordinates to RGIS point coverage
 
-        Args:
-            gdbp_bytes (bytes): In memory rgis table / point coverage
-            x (str, optional): X Name. Defaults to "XCoord".
-            y (str, optional): Y Name. Defaults to "YCoord".
+class RgisFile(Rgis):
+    def __init__(self, fref: ftype, ghaas_bin=None):
+        super().__init__(ghaas_bin)
+        self._ftype_code = _check_ftype_code(fref)
+        self._fref = fref
 
-        Returns:
-            bytes: In memory RGIS file
-        """
-        cmd_path = self.ghaas_bin.joinpath("tblAddXY")
-        cmd = f"{cmd_path} -x {x} -y {y} -a {table}".split()
-        p = sp.Popen(cmd, stdin=sp.PIPE, stdout=sp.PIPE)
-        output, _ = p.communicate(gdbp_bytes)
-        return output
+    def to_table(self, table_type="DBItems", output=None) -> RgisTable:
+        table = RgisTable(self._fref, table_type, ghaas_bin=self.ghaas_bin)
+        return table
+
+    def tbl_add_xy(self, xfield="XCoord", yfield="YCoord", table="DBItems"):
+        flags = [("-a", table), ("-x", xfield), ("-y", yfield)]
+        new_rf = self.run_rgiscmd("tblAddXY", self._fref, flags=flags)
+        self._fref = new_rf
+
+
+class RgisPoint(RgisFile):
+    def __init__(self, fref: ftype, ghaas_bin=None):
+        super().__init__(fref, ghaas_bin)
+
+        # NOTE: Let's just set tables as attributes? Memory Inefficient tradeoff?
+
+    def db_items(
+        self,
+    ) -> RgisTable:
+        return self.to_table(table_type="DBItems")
+
+    @classmethod
+    def from_df(cls, df, xcol, ycol):
+        pass
+
+
+class RgisOld:
+    def __init__(self, ghaas_bin=None):
+        if ghaas_bin is None:
+            self.ghaas_bin = Path("/usr/local/share/ghaas/bin")
+        else:
+            self.ghaas_bin = Path(ghaas_bin)
 
     def tblConv2Point(self, gdbt_bytes: bytes, xfield: str, yfield: str) -> bytes:
         """Convert RGIS table to Point Coverage

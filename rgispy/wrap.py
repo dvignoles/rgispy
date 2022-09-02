@@ -2,10 +2,13 @@
 
 import gzip
 import subprocess as sp
+import tempfile
 from io import StringIO
 from pathlib import Path
 
 import pandas as pd
+
+GIGABYTE = 1000000000
 
 
 class Rgis:
@@ -35,7 +38,7 @@ class Rgis:
         return output
 
     def tblAddXY(
-        self, gdbp_bytes: bytes, x: str = "XCoord", y: str = "YCoord"
+        self, gdbp_bytes: bytes, x: str = "XCoord", y: str = "YCoord", table="DBItems"
     ) -> bytes:
         """Add Coordinates to RGIS point coverage
 
@@ -48,7 +51,7 @@ class Rgis:
             bytes: In memory RGIS file
         """
         cmd_path = self.ghaas_bin.joinpath("tblAddXY")
-        cmd = f"{cmd_path} -x {x} -y {y}".split()
+        cmd = f"{cmd_path} -x {x} -y {y} -a {table}".split()
         p = sp.Popen(cmd, stdin=sp.PIPE, stdout=sp.PIPE)
         output, _ = p.communicate(gdbp_bytes)
         return output
@@ -127,7 +130,9 @@ class Rgis:
 
         return output
 
-    def rgis2df(self, rgis_bytes: bytes) -> pd.DataFrame:
+    def rgis2df(
+        self, rgis_bytes: bytes, table="DBItems", file_obj=False
+    ) -> pd.DataFrame:
         """Convert in Memroy RGIS table/points to pandas DataFrame using rgis2table
 
         Args:
@@ -137,11 +142,20 @@ class Rgis:
             pd.DataFrame: pandas DataFrame
         """
         cmd_path = self.ghaas_bin.joinpath("rgis2table")
-        cmd = f"{cmd_path}".split()
-        p = sp.Popen(cmd, stdin=sp.PIPE, stdout=sp.PIPE)
-        output, _ = p.communicate(rgis_bytes)
-        df = pd.read_csv(StringIO(output.decode()), sep="\t")
-        return df
+        cmd = f"{cmd_path} -a {table}".split()
+
+        if file_obj:
+            rgis_bytes.seek(0)
+            with tempfile.SpooledTemporaryFile(mode="w+", max_size=GIGABYTE) as f:
+                p = sp.run(cmd, stdin=rgis_bytes, stdout=f)
+                f.seek(0)
+                df = pd.read_csv(f, sep="\t")
+                return df
+        else:
+            p = sp.Popen(cmd, stdin=sp.PIPE, stdout=sp.PIPE)
+            output, _ = p.communicate(rgis_bytes)
+            df = pd.read_csv(StringIO(output.decode()), sep="\t")
+            return df
 
     def pntSTNCoord(
         self,
@@ -327,3 +341,34 @@ class Rgis:
         with gzip.open(output_gz, "wb") as f:
             f.write(ps.stdout)
         return output_gz
+
+    def netCells2Grid(self, network, fieldname):
+        cmd_path = self.ghaas_bin.joinpath("netCells2Grid")
+        cmd = f"{cmd_path} -f {fieldname} {network}".split()
+        return sp.run(cmd)
+
+    def rgis2mapper(self, network, sampler, mapper):
+        cmd_path = self.ghaas_bin.joinpath("rgis2mapper")
+        cmd = f"{cmd_path} --domain {network} {sampler} {mapper}".split()
+        return sp.run(cmd)
+
+    def dsAggregate(self, in_ds, out_ds, step, aggregate="avg"):
+        aggs = ["aggregate", "sum"]
+        steps = ["day", "month", "year"]
+        assert aggregate.lower() in aggs, f"aggregate must be on of {aggs}"
+        assert step.lower() in steps, f"aggregate must be on of {steps}"
+        cmd_path = self.ghaas_bin.joinpath("dsAggregate")
+        cmd = f"{cmd_path} --step {step} --aagregate {aggregate} {in_ds} {out_ds}"
+
+        return sp.run(cmd.split())
+
+    def dsSampling(self, ds, domain_file, mapper_file, output, title="rgispy_sampling"):
+        cmd_path = self.ghaas_bin.joinpath("dsSampling")
+        cmd = f"{cmd_path} --domainfile {domain_file} --mapper {mapper_file} --title {title} {ds}"
+        ps = sp.run(cmd.split(), stdout=output)
+        return ps
+
+    def rgis2domain(self, network, output_domain_ds):
+        cmd_path = self.ghaas_bin.joinpath("rgis2domain")
+        cmd = f"{cmd_path} {network} {output_domain_ds}"
+        return sp.run(cmd.split())

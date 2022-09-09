@@ -2,10 +2,11 @@
 
 import gzip
 import subprocess as sp
-import tempfile
 import typing
+import warnings
 from functools import reduce
 from io import BufferedIOBase, StringIO
+from os import PathLike
 from pathlib import Path
 
 import pandas as pd
@@ -13,7 +14,7 @@ import pandas as pd
 GIGABYTE = 1000000000
 
 # types of file objects supported
-ftype = typing.Union[bytes, Path, BufferedIOBase]
+ftype = typing.Union[bytes, str, Path, PathLike, BufferedIOBase]
 
 
 def _check_ftype_code(f: ftype) -> int:
@@ -22,11 +23,13 @@ def _check_ftype_code(f: ftype) -> int:
     if isinstance(f, bytes) or f is None:
         return 1
     # Path
-    if isinstance(f, Path):
+    if isinstance(f, PathLike) or isinstance(f, str):
         return 2
     # binary file descriptor
     if isinstance(f, BufferedIOBase):
         return 3
+
+    return -1
 
 
 def _do_rgiscmd(cmd_configured, finput, foutput):
@@ -34,51 +37,49 @@ def _do_rgiscmd(cmd_configured, finput, foutput):
     (bytes, path, file descriptors)"""
     finput_code = _check_ftype_code(finput)
     foutput_code = _check_ftype_code(foutput)
-    print(finput_code, foutput_code)
 
-    # bytes/bytes PASSED
+    # bytes/bytes
     if finput_code == 1 and foutput_code == 1:
-        print(cmd_configured.split())
         p = sp.run(cmd_configured.split(), input=finput, stdout=sp.PIPE)
         return p.stdout
-    # bytes/Path PASSED
+    # bytes/Path
     if finput_code == 1 and foutput_code == 2:
         cmd_configured += f" - {foutput}"
         p = sp.run(cmd_configured.split(), input=finput)
         return foutput
-    # bytes/fd PASSED
+    # bytes/fd
     if finput_code == 1 and foutput_code == 3:
         foutput.seek(0)
         p = sp.run(cmd_configured.split(), input=finput, stdout=foutput)
         return None
-    # Path/bytes PASSED
+    # Path/bytes
     if finput_code == 2 and foutput_code == 1:
         cmd_configured += f" {finput}"
         p = sp.run(cmd_configured.split(), stdout=sp.PIPE)
         return p.stdout
-    # Path/Path PASSED
+    # Path/Path
     if finput_code == 2 and foutput_code == 2:
         cmd_configured += f" {finput} {foutput}"
         sp.run(cmd_configured.split())
         return foutput
-    # Path/fd PASSED
+    # Path/fd
     if finput_code == 2 and foutput_code == 3:
         foutput.seek(0)
         cmd_configured += f" {finput}"
         p = sp.run(cmd_configured.split(), stdout=foutput)
         return None
-    # fd/bytes PASSED
+    # fd/bytes
     if finput_code == 3 and foutput_code == 1:
         finput.seek(0)
         p = sp.run(cmd_configured.split(), stdin=finput, stdout=sp.PIPE)
         return p.stdout
-    # fd/Path PASSED
+    # fd/Path
     if finput_code == 3 and foutput_code == 2:
         finput.seek(0)
         cmd_configured += f" - {foutput}"
         p = sp.run(cmd_configured.split(), stdin=finput)
         return foutput
-    # fd/fd PASSED
+    # fd/fd
     if finput_code == 3 and foutput_code == 3:
         finput.seek(0)
         foutput.seek(0)
@@ -107,12 +108,39 @@ class Rgis:
             cmd_configured = f"{cmd_path}"
         return _do_rgiscmd(cmd_configured, finput, foutput)
 
+    def assert_extension(self, rgis_path):
+        valid = [".gdbp", ".gdbd", ".gdbc", ".gdbt", ".gdbl", ".ds", ".gds"]
+        valid_gzip = [v + ".gz" for v in valid]
+        valid += valid_gzip
+        assert rgis_path.suffix != "", f"{rgis_path.name} must have file extension"
+        assert (
+            rgis_path.name.split(".", 1)[-1] in valid
+        ), f"{rgis_path.name} must have extension in {valid}"
+
+    def assert_ftype(self, fref):
+        assert (
+            _check_ftype_code(fref) != -1
+        ), f"{type(fref)} is invalid initialization type. Must initialize with instance"
+        "of bytes, Path, or BufferedIOBase."
+
+    def validate_fref(self, fref):
+        self.assert_ftype(fref)
+        self._ftype_code = _check_ftype_code(fref)
+        if self._ftype_code == 2:
+            # ensure Path type and real
+            fref_path = Path(fref)
+            self.assert_extension(fref)
+            assert fref_path.exists(), f"{fref_path} does not exist"
+            return fref_path
+        else:
+            return fref
+
 
 class RgisTable(Rgis):
     def __init__(self, fref: ftype, table_type: str = None, ghaas_bin=None):
         super().__init__(ghaas_bin)
-        self._fref = fref
-        self.table_type = table_type
+        fref = self.validate_fref(fref)
+        self.table_type = table_type if table_type is not None else "DBItems"
         flags = [("-a", table_type)] if table_type is not None else None
         # save table as bytes
         self.table = self.run_rgiscmd("rgis2table", fref, flags=flags)
@@ -137,10 +165,12 @@ class RgisTable(Rgis):
 
 
 class RgisFile(Rgis):
+    def set_fref(self, new_fref):
+        self._fref = self.validate_fref(new_fref)
+
     def __init__(self, fref: ftype, ghaas_bin=None):
         super().__init__(ghaas_bin)
-        self._ftype_code = _check_ftype_code(fref)
-        self._fref = fref
+        self.set_fref(fref)
 
     def to_table(self, table_type="DBItems", output=None) -> RgisTable:
         table = RgisTable(self._fref, table_type, ghaas_bin=self.ghaas_bin)
@@ -149,14 +179,70 @@ class RgisFile(Rgis):
     def tbl_add_xy(self, xfield="XCoord", yfield="YCoord", table="DBItems"):
         flags = [("-a", table), ("-x", xfield), ("-y", yfield)]
         new_rf = self.run_rgiscmd("tblAddXY", self._fref, flags=flags)
-        self._fref = new_rf
+        self.set_fref(new_rf)
+
+    def tbl_redef_field(self, field, rename, table="DBItems"):
+        flags = [("-a", table), ("-f", field), ("-r", rename)]
+        new_rf = self.run_rgiscmd("tblRedefField", self._fref, flags=flags)
+        self.set_fref(new_rf)
+
+    def load(self):
+        """Load into memory if file path"""
+        if self._ftype_code != 2:
+            warnings.warn("Source already loaded or reference to file descriptor.")
+        else:
+            self.assert_extension(self._fref)
+            if self._fref.suffix == ".gz":
+                with gzip.open(self._rfef, "rb") as f:
+                    self.set_fref(f.read())
+            else:
+                with open(self._rfef, "rb") as f:
+                    self.set_fref(f.read())
+
+    def _to_file(
+        self, output_dir_path, name, extension, gzipped=True, replace_path=False
+    ):
+        # only relevant for in memory files
+        assert self._ftype_code != 3, "Source is already file descriptor"
+        assert self._ftype_code != 2, f"Source already exists at {self._fref}"
+
+        full_name = f"{name}.{extension}"
+
+        # overwrite flag if supplied .gz
+        if extension.endswith(".gz"):
+            if gzipped is False:
+                warnings.warn(
+                    ".gz file extension supplied with gzipped=False. gzip compression \
+                will be used anyway"
+                )
+
+            gzipped = True
+
+        if gzipped and (not full_name.endswith(".gz")):
+            full_name += ".gz"
+
+        full_path = Path(output_dir_path).joinpath(full_name)
+        self.assert_extension(full_path)
+
+        assert (full_path.exists()) and (
+            not replace_path
+        ), f"{full_path} exists, set replace_path=True if you wish to overwrite it"
+
+        if not full_path.parent.exists():
+            full_path.parent.mkdir(parents=True)
+
+        if self._ftype_code == 1:
+            if gzipped:
+                with gzip.open(full_path, mode="wb") as f:
+                    f.write(self._fref)
+            else:
+                with open(full_path, mode="wb") as f:
+                    f.write(self._fref)
 
 
 class RgisPoint(RgisFile):
     def __init__(self, fref: ftype, ghaas_bin=None):
         super().__init__(fref, ghaas_bin)
-
-        # NOTE: Let's just set tables as attributes? Memory Inefficient tradeoff?
 
     def db_items(
         self,
@@ -164,70 +250,20 @@ class RgisPoint(RgisFile):
         return self.to_table(table_type="DBItems")
 
     @classmethod
-    def from_df(cls, df, xcol, ycol):
-        pass
+    def from_df(cls, df, xcol, ycol, ghaas_bin=None):
+        tbl = RgisTable.from_df(df, ghaas_bin=ghaas_bin)
+        flags = [("--xcoord", xcol), ("--ycoord", ycol)]
+        rgis = Rgis(ghaas_bin=ghaas_bin)
+        gdbp = rgis.run_rgiscmd("tblAddXY", tbl._fref, flags=flags)
+        return cls(gdbp)
 
+    def pnt_stn_char(self, network, suffix=None):
 
-class RgisOld:
-    def __init__(self, ghaas_bin=None):
-        if ghaas_bin is None:
-            self.ghaas_bin = Path("/usr/local/share/ghaas/bin")
-        else:
-            self.ghaas_bin = Path(ghaas_bin)
-
-    def tblConv2Point(self, gdbt_bytes: bytes, xfield: str, yfield: str) -> bytes:
-        """Convert RGIS table to Point Coverage
-
-        Args:
-            gdbt_bytes (bytes): in memory rgis table
-            xfield (str): Name of x coordinate in table
-            yfield (str): Name of y coordinate in table
-
-        Returns:
-            bytes: In memory RGIS point coverage
-        """
-        cmd_path = self.ghaas_bin.joinpath("tblConv2Point")
-        cmd = f"{cmd_path} --xcoord {xfield} --ycoord {yfield}".split()
-
-        p = sp.Popen(cmd, stdin=sp.PIPE, stdout=sp.PIPE)
-
-        output, _ = p.communicate(
-            gdbt_bytes,
-        )
-        return output
-
-    def tblRedefField(self, gdbp_bytes: bytes, old: str, new: str) -> bytes:
-        """Rename RGIS Table Field name
-
-        Args:
-            gdbp_bytes (bytes): In Memory RGIS table like
-            old (str): old field name
-            new (str): new field name
-
-        Returns:
-            bytes: in Memory RGIS table like
-        """
-        cmd_path = self.ghaas_bin.joinpath("tblRedefField")
-        cmd = f"{cmd_path} -f {old} -r {new}".split()
-        p = sp.Popen(cmd, stdin=sp.PIPE, stdout=sp.PIPE)
-        output, _ = p.communicate(gdbp_bytes)
-        return output
-
-    def pntSTNChar(self, gdbp_bytes: bytes, network: Path, suffix: str = None) -> bytes:
-        """Gather RGIS network attributes and add to point coverage
-
-        Args:
-            gdbp_bytes (bytes): RGIS Point Coverage
-            network (Path): RGIS Network Coverage (gdbn)
-            suffix (str, optional): Suffix to add to new columns. Defaults to None.
-
-        Returns:
-            bytes: In Memory RGIS Point Coverage
-        """
-        cmd_path = self.ghaas_bin.joinpath("pntSTNChar")
-        cmd = f"{cmd_path} -n {network}".split()
-        p = sp.Popen(cmd, stdin=sp.PIPE, stdout=sp.PIPE)
-        output, _ = p.communicate(gdbp_bytes)
+        flags = [
+            ("-n", f"{network}"),
+        ]
+        new_rf = self.run_rgiscmd("pntSTNChar", self._fref, flags=flags)
+        self.set_fref(new_rf)
 
         if suffix is not None:
 
@@ -245,65 +281,44 @@ class RgisOld:
             ]
 
             for c in char_fields:
-                output = self.tblRedefField(output, c, f"{c}{suffix}")
+                self.tbl_redef_field(c, f"{c}{suffix}")
 
-        return output
+    def pnt_stn_coord(self, network, field, tolerance, radius, cfield="SubbasinArea"):
+        flags = [
+            ("-M", "fixed"),
+            ("--tolerance", tolerance),
+            ("--radius", radius),
+            ("--field", field),
+            ("-c", cfield),
+            ("--network", network),
+        ]
+        new_rf = self.run_rgiscmd("pntSTNCoord", self._fref, flags=flags)
+        self.set_fref(new_rf)
 
-    def rgis2df(
-        self, rgis_bytes: bytes, table="DBItems", file_obj=False
-    ) -> pd.DataFrame:
-        """Convert in Memroy RGIS table/points to pandas DataFrame using rgis2table
 
-        Args:
-            rgis_bytes (bytes): In Memory RGIS table like
+class RgisGrid(RgisFile):
+    # Idea: If not output files supplied to grd functions, use namedTemporaryFile
+    pass
 
-        Returns:
-            pd.DataFrame: pandas DataFrame
-        """
-        cmd_path = self.ghaas_bin.joinpath("rgis2table")
-        cmd = f"{cmd_path} -a {table}".split()
 
-        if file_obj:
-            rgis_bytes.seek(0)
-            with tempfile.SpooledTemporaryFile(mode="w+", max_size=GIGABYTE) as f:
-                p = sp.run(cmd, stdin=rgis_bytes, stdout=f)
-                f.seek(0)
-                df = pd.read_csv(f, sep="\t")
-                return df
+class RgisDataStream(Rgis):
+    pass
+
+
+class RgisNetwork:
+    pass
+
+
+class RgisPolygon:
+    pass
+
+
+class RgisOld:
+    def __init__(self, ghaas_bin=None):
+        if ghaas_bin is None:
+            self.ghaas_bin = Path("/usr/local/share/ghaas/bin")
         else:
-            p = sp.Popen(cmd, stdin=sp.PIPE, stdout=sp.PIPE)
-            output, _ = p.communicate(rgis_bytes)
-            df = pd.read_csv(StringIO(output.decode()), sep="\t")
-            return df
-
-    def pntSTNCoord(
-        self,
-        gdbp_bytes: bytes,
-        network: Path,
-        field: str,
-        tolerance: int,
-        radius: int,
-        cfield: str = "SubbasinArea",
-    ) -> bytes:
-        """Snap Coordinates of RGIS Point Coverage to different network.
-        By default the comparison field is compared to SubbasinArea.
-
-        Args:
-            gdbp_bytes (bytes): In Memory RGIS Point Coverage
-            network (Path): RGIS network coverage (gdbn)
-            field (str): Field of point coverage to use for comparison.
-            tolerance (int): Tolerance in percent for field comparison.
-            radius (int): Radius in KM to search for cell match.
-            cfield (str, optional): Field of Network to compare to field of Point Coverage. Defaults to "SubbasinArea".
-
-        Returns:
-            bytes: In Memory RGIS Point Coverage
-        """
-        cmd_path = self.ghaas_bin.joinpath("pntSTNCoord")
-        cmd = f"{cmd_path} -M fixed --tolerance {tolerance} --radius {radius} --field {field} -c {cfield} --network {network}".split()
-        p = sp.Popen(cmd, stdin=sp.PIPE, stdout=sp.PIPE)
-        output, _ = p.communicate(gdbp_bytes)
-        return output
+            self.ghaas_bin = Path(ghaas_bin)
 
     def grdTSAgg(
         self, gdbc: Path, agg: str, step: str, out_gdbc_gz: Path

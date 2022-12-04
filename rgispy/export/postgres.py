@@ -1,3 +1,6 @@
+"""Postgres snippets and routines"""
+
+
 import uuid
 
 import geopandas as gpd
@@ -63,7 +66,8 @@ def upsert_df(con, df, table, unique_constraint_cols: list[str], schema="public"
     # col1 = exluded.col1, col2=excluded.col2
     update_column_stmt = ", ".join([f'"{col}" = EXCLUDED."{col}"' for col in columns])
     try:
-        # For the ON CONFLICT clause, postgres requires that the columns have unique constraint
+        # For the ON CONFLICT clause, postgres requires that
+        # the columns have unique constraint
         constraint = f"unq_{table}_constraint_for_upsert"
         drop_constraint = (
             f'ALTER TABLE "{table}" DROP CONSTRAINT IF EXISTS {constraint};'

@@ -3,6 +3,7 @@ import gzip
 import os
 import struct
 import subprocess as sp
+import warnings
 from io import StringIO
 from math import ceil, isnan
 from pathlib import Path
@@ -10,12 +11,14 @@ from pathlib import Path
 # Type Hints
 from typing import Any, Optional, Union
 
+import geopandas as gpd
 import numpy as np
 import pandas as pd
 import xarray as xr
 from affine import Affine
 
-from .grid import count_non_nan, non_nan_cells
+from .core import RgisPoint
+from .deprecated.grid import count_non_nan, non_nan_cells
 
 # type aliases
 numeric = Union[int, float, np.number]
@@ -98,6 +101,63 @@ OUT_ATTR = {
         "units": "km",
     },
 }
+
+
+def add_network_info(
+    df, xcol: str, ycol: str, gdbn: Path, suffix=None, include_coords=True
+):
+    if suffix is None:
+        suffix = gdbn.name.split(".")[0].split("_")[-2]
+
+    # completely null columns are lost in this process
+    null_columns = []
+    for c in df.columns:
+        if df[c].isnull().all():
+            null_columns.append(c)
+
+    gdbp_from = RgisPoint.from_df(df.reset_index(), xcol, ycol)
+    gdbp_from.pnt_stn_char(gdbn, suffix=suffix)
+
+    if include_coords:
+        gdbp_from.tbl_add_xy(
+            xfield=f"xCoord{suffix}", yfield=f"yCoord{suffix}", table="DBItems"
+        )
+    df_char = gdbp_from.db_items().df()
+
+    for c in null_columns:
+        df_char.loc[:, c] = df[c]
+
+    for c in df.columns:
+        if c not in df_char.columns:
+            warnings.warn(
+                f"{c} columns lost in pntSTNChar process (add_network_info). If it is a column of empty strings, set those as np.nan"
+            )
+
+    # keep same index as input
+    if df.index.name is not None:
+        df_char.loc[:, df.index.name] = df.index
+        df_char.set_index(df.index.name, inplace=True)
+
+    if isinstance(df, gpd.GeoDataFrame):
+        df_char = gpd.GeoDataFrame(df_char, geometry=df.geometry)
+
+    # re-order columns
+    prefix_cols = []
+    suffix_cols = []
+
+    if "geometry" in df_char.columns:
+        suffix_cols.append("geometry")
+
+    if "ID" in df_char.columns:
+        prefix_cols.append("ID")
+
+    df_cols = [c for c in df.columns if c not in prefix_cols + suffix_cols]
+    new_cols = [
+        c for c in df_char.columns if c not in prefix_cols + df_cols + suffix_cols
+    ]
+    re_ordered_cols = prefix_cols + df_cols + new_cols + suffix_cols
+    df_char = df_char[re_ordered_cols]
+    return df_char
 
 
 def get_encoding(min_val: numeric, max_val: numeric) -> tuple[str, int]:

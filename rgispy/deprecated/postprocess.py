@@ -3,7 +3,7 @@ from pathlib import Path
 import pandas as pd
 import xarray as xr
 
-from .network import lookup_cellid
+from ..network import lookup_cellid
 
 
 def join_sampled_files(

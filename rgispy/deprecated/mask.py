@@ -9,8 +9,8 @@ from affine import Affine
 from xarray.core.dataarray import DataArray as xarray_da
 from xarray.core.dataset import Dataset as xarray_ds
 
+from ..network import get_all_basin_mouth
 from .grid import count_non_nan, get_buffer_cells, non_nan_cells
-from .network import get_all_basin_mouth
 
 
 def get_empty_da(da_template: xarray_da, da_name: str) -> xarray_da:

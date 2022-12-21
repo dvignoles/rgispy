@@ -210,7 +210,8 @@ def n_records(year: Optional[int], time_step: str) -> int:
 
 
 def gdbc_to_ds_buffer(gdbc: Path, network: Path) -> Optional[IO[bytes]]:
-    """Get buffered fileobject of datastream from gdbc using network gdbn as template via rgis2ds command
+    """Get buffered fileobject of datastream from gdbc using network gdbn as template
+    via rgis2ds command
 
     Args:
         gdbc (Path): gdbc file path
@@ -232,7 +233,8 @@ def gdbc_to_ds_buffer(gdbc: Path, network: Path) -> Optional[IO[bytes]]:
 def get_true_datastream(
     file_in: Union[BinaryIO, PathLike[str]]
 ) -> Union[BinaryIO, gzip.GzipFile]:
-    """Get file descriptor of either datastream (gds) gzip compressed datastream (gz) or stdin buffer or rgis2ds stdout
+    """Get file descriptor of either datastream (gds) gzip compressed datastream (gz)
+    or stdin buffer or rgis2ds stdout
 
     Args:
         file_in (file like): either file like object or path like

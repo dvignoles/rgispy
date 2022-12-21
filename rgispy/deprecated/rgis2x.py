@@ -172,7 +172,7 @@ def gdsgz_to_geotiff(gdsgz, network, year, time_domain, output_dir=Path.cwd()):
                 assert arr.shape == (height, width)
                 # if tiff total size > 4gb, need to use BIGTIFF=YES GTiff Creation option
                 byte_size_est = arr.size * arr.itemsize * count * 1.1
-                big_tiff = "YES" if byte_size_est > (4 * 10 ** 9) else "NO"
+                big_tiff = "YES" if byte_size_est > (4 * 10**9) else "NO"
 
                 tif = rasterio.open(
                     tif_path,

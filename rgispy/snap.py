@@ -3,14 +3,11 @@
 import typing
 from functools import partial
 from numbers import Number
-from pathlib import Path
 
 import geopandas as gpd
 import numpy as np
 import xarray as xr
 from geopy.distance import geodesic
-
-from .wrap import Rgis
 
 xarray_ds = xr.core.dataset.Dataset
 xarray_da = xr.core.dataarray.DataArray
@@ -579,19 +576,6 @@ def snap_gdf(
         return snap_results, report
 
     return snap_results
-
-
-def add_network_info(df, xcol: str, ycol: str, gdbn: Path, suffix=None):
-    if suffix is None:
-        suffix = gdbn.name.split(".")[0].split("_")[-2]
-
-    rgis = Rgis()
-    gdbt = rgis.table2rgis(df)
-    gdbp_from = rgis.tblConv2Point(gdbt, xcol, ycol)
-    gdbp_from_char = rgis.pntSTNChar(gdbp_from, gdbn, suffix=suffix)
-    df_char = rgis.rgis2df(gdbp_from_char)
-
-    return df_char
 
 
 def _snap_distance(

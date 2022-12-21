@@ -22,9 +22,10 @@ setup(
         "geoalchemy2",
         "psycopg2",
         "geopy",
+        "click>=8.0",
     ],
     python_requires=">=3.9",
     entry_points={
-        "console_scripts": [],
+        "console_scripts": ["rgispySample=rgispy.routines.sample:wbm_sample"],
     },
 )

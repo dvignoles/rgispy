@@ -1,6 +1,4 @@
-import gzip
 import multiprocessing as mp
-import shutil
 import tempfile
 from pathlib import Path
 
@@ -134,8 +132,12 @@ def _do_sample_file_mp(
     mappers,
     network,
     var_name,
+    output_dir,
     ghaas_bin=None,
     scratch_dir=None,
+    ts_aggregate=False,
+    compress=False,
+    accum_vars=["Runoff", "Precipitation"],
 ):
     """Wrap _do_sample_file generator for multiprocessing simplification"""
     output = {}
@@ -153,9 +155,22 @@ def _do_sample_file_mp(
     ):
         mapper_name_short = name.split("_")[1]
         csv_name = f"{mapper_name_short}_{temp_name}.csv"
-        csv_path = scratch_dir.joinpath(csv_name)
+        if compress:
+            csv_name += ".gz"
+
+        csv_path = output_dir.joinpath(csv_name)
         df.to_csv(csv_path)
-        output[name] = {var_name: csv_path}
+
+        output[name] = {var_name: {"dTS": csv_path}}
+        if ts_aggregate:
+            monthly, annual = _agg_ts(df, accum_vars=accum_vars)
+            mts = output_dir.joinpath(csv_name.replace("dTS", "mTS"))
+            ats = output_dir.joinpath(csv_name.replace("dTS", "aTS"))
+            monthly.to_csv(mts)
+            annual.to_csv(ats)
+            output[name][var_name]["mTS"] = mts
+            output[name][var_name]["aTS"] = ats
+
     return output
 
 
@@ -165,21 +180,35 @@ def _process_mp_output(var_dfs, completed_procs):
         output = p.get()
         for mapper, var_dict in output.items():
             for var_name, var_tf in var_dict.items():
-                var_dfs[mapper][var_name].append(var_tf)
+                for ts, out in var_tf.items():
+                    var_dfs[mapper][var_name][ts].append(out)
     return var_dfs
 
 
 def _mp_engine(
-    workers, data, domain, mappers, network, samplers, ghaas_bin=None, scratch_dir=None
+    workers,
+    data,
+    domain,
+    mappers,
+    network,
+    samplers,
+    output_dir,
+    ghaas_bin=None,
+    scratch_dir=None,
+    ts_aggregate=False,
+    compress=False,
+    accum_vars=["Runoff", "Precipitation"],
 ):
     """Run sampling either as standalone process or in pool configuration"""
     zone_dfs = {
-        mapper_name: {v: [] for v in data["zone"].keys()}
+        mapper_name: {v: {"dTS": [], "mTS": [], "aTS": []} for v in data["zone"].keys()}
         for mapper_name in samplers.keys()
         if samplers[mapper_name]["type"] == "zone"
     }
     point_dfs = {
-        mapper_name: {v: [] for v in data["point"].keys()}
+        mapper_name: {
+            v: {"dTS": [], "mTS": [], "aTS": []} for v in data["point"].keys()
+        }
         for mapper_name in samplers.keys()
         if samplers[mapper_name]["type"] == "point"
     }
@@ -187,96 +216,83 @@ def _mp_engine(
     zone_mappers = {k: v for k, v in mappers.items() if v["type"] == "zone"}
     point_mappers = {k: v for k, v in mappers.items() if v["type"] == "point"}
 
-    if workers <= 1:
-        if len(zone_mappers) > 0:
-            for var_key, var_ds_group in data["zone"].items():
-                for ds in var_ds_group:
-                    for mapper_name, tf in _do_sample_to_tempfile(
-                        ds,
-                        domain,
-                        zone_mappers,
-                        network,
-                        var_name=var_key,
-                        ghaas_bin=ghaas_bin,
-                        scratch_dir=scratch_dir,
-                    ):
-                        var_dfs[mapper_name][var_key].append(tf)
-        if len(point_mappers) > 0:
-            for var_key, var_ds_group in data["point"].items():
-                for ds in var_ds_group:
-                    for mapper_name, df in _do_sample_to_tempfile(
-                        ds,
-                        domain,
-                        point_mappers,
-                        network,
-                        var_name=var_key,
-                        ghaas_bin=ghaas_bin,
-                        scratch_dir=scratch_dir,
-                    ):
-                        var_dfs[mapper_name][var_key].append(df)
-        return var_dfs
-    else:
-        procs = []
+    # TODO: By dividing into zone/point separate calls to _do_sample_file_mp, gdbc files can be converted to datastream
+    # multiple times (once for point samplers, once for zone samplers)
+    # Should re-factor to ensure this does not happen
 
-        with mp.get_context("spawn").Pool(workers) as pool:
-            try:
-                if len(zone_mappers) > 0:
-                    for var_key, var_ds_group in data["zone"].items():
-                        for ds in var_ds_group:
-                            tf = f"{ds.name.split('.')[0]}"
-                            procs.append(
-                                pool.apply_async(
-                                    _do_sample_file_mp,
-                                    args=(
-                                        ds,
-                                        tf,
-                                        domain,
-                                        zone_mappers,
-                                        network,
-                                        var_key,
-                                    ),
-                                    kwds=dict(
-                                        ghaas_bin=ghaas_bin, scratch_dir=scratch_dir
-                                    ),
-                                )
+    procs = []
+    with mp.get_context("spawn").Pool(workers) as pool:
+        try:
+            if len(zone_mappers) > 0:
+                for var_key, var_ds_group in data["zone"].items():
+                    for ds in var_ds_group:
+                        tf = f"{ds.name.split('.')[0]}"
+                        procs.append(
+                            pool.apply_async(
+                                _do_sample_file_mp,
+                                args=(
+                                    ds,
+                                    tf,
+                                    domain,
+                                    zone_mappers,
+                                    network,
+                                    var_key,
+                                    output_dir,
+                                ),
+                                kwds=dict(
+                                    ghaas_bin=ghaas_bin,
+                                    scratch_dir=scratch_dir,
+                                    ts_aggregate=ts_aggregate,
+                                    compress=compress,
+                                    accum_vars=accum_vars,
+                                ),
                             )
-                if len(point_mappers) > 0:
-                    for var_key, var_ds_group in data["point"].items():
-                        for ds in var_ds_group:
-                            tf = f"{ds.name.split('.')[0]}"
-                            procs.append(
-                                pool.apply_async(
-                                    _do_sample_file_mp,
-                                    args=(
-                                        ds,
-                                        tf,
-                                        domain,
-                                        point_mappers,
-                                        network,
-                                        var_key,
-                                    ),
-                                    kwds=dict(
-                                        ghaas_bin=ghaas_bin, scratch_dir=scratch_dir
-                                    ),
-                                )
+                        )
+            if len(point_mappers) > 0:
+                for var_key, var_ds_group in data["point"].items():
+                    for ds in var_ds_group:
+                        tf = f"{ds.name.split('.')[0]}"
+                        procs.append(
+                            pool.apply_async(
+                                _do_sample_file_mp,
+                                args=(
+                                    ds,
+                                    tf,
+                                    domain,
+                                    point_mappers,
+                                    network,
+                                    var_key,
+                                    output_dir,
+                                ),
+                                kwds=dict(
+                                    ghaas_bin=ghaas_bin,
+                                    scratch_dir=scratch_dir,
+                                    ts_aggregate=ts_aggregate,
+                                    compress=compress,
+                                    accum_vars=accum_vars,
+                                ),
                             )
-                pool.close()
-                pool.join()
+                        )
+            pool.close()
+            pool.join()
 
-                var_dfs = _process_mp_output(var_dfs, procs)
-                return var_dfs
-            except KeyboardInterrupt:
-                pool.terminate()
+            var_dfs = _process_mp_output(var_dfs, procs)
+            return var_dfs
+        except KeyboardInterrupt:
+            pool.terminate()
 
 
 def _collect_sample(
     data: dict[str, list[Path]],  # {var_name: [ds1980, ds1981, ...]}
     network: Path,
     samplers: dict[str, Path],  # {mapper_name: {type: <point or zone>, file: <path>}}
-    temp_dir: Path,
+    output_dir: Path,
     workers=1,
     ghaas_bin=None,
     scratch_dir=None,
+    ts_aggregate=False,
+    compress=False,
+    accum_vars=["Runoff", "Precipitation"],
 ):
     """Setup domain & mappers and call sampling driver"""
     rgis = Rgis(ghaas_bin=ghaas_bin, scratch_dir=scratch_dir)
@@ -284,7 +300,7 @@ def _collect_sample(
     domain = rgis._temp_rgisfile(name="domain", suffix=".ds")
     mappers = {
         mapper_name: _get_mapper(
-            network, info, ghaas_bin=ghaas_bin, scratch_dir=temp_dir
+            network, info, ghaas_bin=ghaas_bin, scratch_dir=scratch_dir
         )
         for mapper_name, info in samplers.items()
     }
@@ -303,8 +319,12 @@ def _collect_sample(
             mappers_fname,
             network,
             samplers,
+            output_dir,
             ghaas_bin=ghaas_bin,
-            scratch_dir=temp_dir,
+            scratch_dir=scratch_dir,
+            ts_aggregate=ts_aggregate,
+            compress=compress,
+            accum_vars=accum_vars,
         )
     finally:
         domain.close()
@@ -536,9 +556,12 @@ def sample(
     data: dict[str, list[Path]],  # {var_name: [ds1980, ds1981, ...]}
     network: Path,
     samplers: list[Path],
+    output_dir: Path,
     workers=1,
     ghaas_bin=None,
     scratch_dir=None,
+    ts_aggregate=False,
+    compress=False,
     accum_vars=["Runoff", "Precipitation"],
 ):
     _validate_inputs(data)
@@ -548,15 +571,18 @@ def sample(
         data,
         network,
         samplers_dict,
-        scratch_dir,
+        output_dir,
         workers=workers,
         ghaas_bin=ghaas_bin,
         scratch_dir=scratch_dir,
+        ts_aggregate=ts_aggregate,
+        compress=compress,
+        accum_vars=accum_vars,
     )
     return var_csvs
 
 
-def _group_ds_byvar(all_gds):
+def _group_ds_byvar(all_gds, gdbc=False):
     all_vars = set()
 
     all_domain = set()
@@ -567,10 +593,16 @@ def _group_ds_byvar(all_gds):
     for gds in all_gds:
         split = gds.name.split("_")
 
-        all_domain.add(split[0])
-        all_exp.add(split[3])
-        all_res.add(split[4])
-        variable = split[2]
+        if gdbc:
+            all_domain.add(split[0])
+            all_exp.add(split[2])
+            all_res.add(split[3])
+            variable = split[1]
+        else:
+            all_domain.add(split[0])
+            all_exp.add(split[3])
+            all_res.add(split[4])
+            variable = split[2]
 
         if variable in all_vars:
             gds_groups[variable].append(gds)
@@ -640,51 +672,6 @@ def _dry_summary(
     print(summary)
 
 
-def _write_csvs_merged(
-    var_csvs,
-    output_dir,
-    scratch_dir,
-    ts_aggregate=True,
-    accum_vars=["Precipitation", "Runoff"],
-):
-    for mapper, csvs in var_csvs.items():
-        csv_name = f"{mapper.replace('_Static', '')}"
-        dts = scratch_dir.joinpath(csv_name + "_dTS.csv")
-        mts = scratch_dir.joinpath(csv_name + "_mTS.csv")
-        ats = scratch_dir.joinpath(csv_name + "_aTS.csv")
-
-        vars = list(csvs.keys())
-
-        # ensure same number of files (years) for all vars
-        assert len(set([len(csvs[v]) for v in vars])) == 1
-        num_vars = len(csvs[vars[0]])
-        for i in range(0, num_vars):
-            # append to file on disk iteratively
-            year_df = pd.concat(
-                [pd.read_csv(csvs[v][i], index_col=("SampleID", "Date")) for v in vars],
-                axis=1,
-            )
-            header = False if i > 0 else True
-            mode = "a" if i > 0 else "w"
-            year_df.to_csv(dts, mode=mode, header=header)
-
-            # aggregate daily -> monthly -> annual
-            if ts_aggregate:
-                monthly, annual = _agg_ts(year_df, accum_vars=accum_vars)
-                monthly.to_csv(mts, mode=mode, header=header)
-                annual.to_csv(ats, mode=mode, header=header)
-
-        # compress inplace
-        for ts in [dts, mts, ats]:
-            if ts.exists():
-                tf_gz = output_dir.joinpath(ts.name + ".gz")
-                with open(ts, "rb") as f_in:
-                    with gzip.open(tf_gz, "wb") as f_out:
-                        shutil.copyfileobj(f_in, f_out)
-                print(tf_gz)
-                ts.unlink()
-
-
 def _rename(mapper, csv_name, gz=True):
     name = f"{mapper.replace('_Static', '')}" + "_"
     name += csv_name.split("_")[-4] + "_"
@@ -694,70 +681,70 @@ def _rename(mapper, csv_name, gz=True):
     return name
 
 
-def _write_csvs_split(
-    var_csvs,
-    output_dir,
-    ts_aggregate=True,
-    accum_vars=["Precipitation", "Runoff"],
-):
-    output = {}
-    for mapper, csvs in var_csvs.items():
-        vars = list(csvs.keys())
-
-        # ensure same number of files (years) for all vars
-        assert len(set([len(csvs[v]) for v in vars])) == 1
-        num_vars = len(csvs[vars[0]])
-        output[mapper] = {}
-        for v in vars:
-            output[mapper][v] = {"dTS": [], "mTS": [], "aTS": []}
-            for i in range(0, num_vars):
-                csv = csvs[v][i]
-                year_var_df = pd.read_csv(csv, index_col=("SampleID", "Date"))
-                dts = output_dir.joinpath(_rename(mapper, csv.name))
-                year_var_df.to_csv(dts)
-                output[mapper][v]["dTS"].append(dts)
-                # aggregate daily -> monthly -> annual
-                if ts_aggregate:
-                    mts = dts.parent.joinpath(dts.name.replace("dTS", "mTS"))
-                    ats = dts.parent.joinpath(dts.name.replace("dTS", "aTS"))
-
-                    monthly, annual = _agg_ts(year_var_df, accum_vars=accum_vars)
-                    monthly.to_csv(mts)
-                    output[mapper][v]["mTS"].append(mts)
-                    annual.to_csv(ats)
-                    output[mapper][v]["aTS"].append(ats)
-    return output
-
-
-def sample_wbm_dsdir(
+def _prep_inputs(
     dsdir,
+    itype="ds",
+    outputs_only=True,
+    variables=[],
+    filters=[],
+):
+    assert itype in ["ds", "gdbc"], "must supply directory of datastream (ds) or gdbc"
+
+    if isinstance(dsdir, Path) and dsdir.is_dir():
+        if itype == "ds":
+            all_dts = dsdir.glob("*dTS*.gds*")
+        else:
+            all_dts = dsdir.rglob("*dTS*.gdbc*")
+    else:  # list of files
+        assert all([p.is_file() for p in dsdir]), "Must be list of path objects"
+        all_dts = sorted(dsdir)
+
+    if len(filters) > 0:
+        for fil in filters:
+            all_dts = filter(lambda x: fil.lower() in x.name.lower(), all_dts)
+
+    if outputs_only:
+        all_dts = filter(lambda x: "output" in x.name.lower(), all_dts)
+
+    all_dts = sorted(all_dts)
+    is_gdbc = True if itype == "gdbc" else False
+    gds_groups, exp, res, domain = _group_ds_byvar(all_dts, gdbc=is_gdbc)
+
+    # filter vars if specified
+    if len(variables) > 0:
+        gds_groups = _filter_vars(gds_groups, variables)
+
+    return gds_groups, exp, res, domain
+
+
+def _sample_dir(
+    directory,
+    directory_type,
     network,
     samplers,
     output_dir,
     workers=1,
     ts_aggregate=True,
     outputs_only=True,
-    merge_output=False,
     ghaas_bin=None,
     scratch_dir=None,
     variables=[],
     accum_vars=["Runoff", "Precipitation"],
+    compress=False,
+    filters=[],
 ):
-    all_dts = dsdir.glob("*dTS*.gds*")
-    if outputs_only:
-        all_dts = filter(lambda x: "output" in x.name.lower(), all_dts)
-
-    all_dts = sorted(all_dts)
-    gds_groups, exp, res, domain = _group_ds_byvar(all_dts)
+    gds_groups, exp, res, domain = _prep_inputs(
+        directory,
+        itype=directory_type,
+        outputs_only=outputs_only,
+        variables=variables,
+        filters=filters,
+    )
 
     # set up final output dir
     output_subdir = output_dir.joinpath(f"{domain}_{exp}_{res}")
     if not output_subdir.exists():
         output_subdir.mkdir(parents=True)
-
-    # filter vars if specified
-    if len(variables) > 0:
-        gds_groups = _filter_vars(gds_groups, variables)
 
     # for testing
     # gds_groups = {k: v[0:2] for k, v in gds_groups.items()}
@@ -808,36 +795,87 @@ def sample_wbm_dsdir(
         groups,
         network,
         samplers,
+        output_subdir,
         workers=workers,
         ghaas_bin=ghaas_bin,
         scratch_dir=Path(temp_dir.name),
         accum_vars=accum_vars,
+        ts_aggregate=ts_aggregate,
+        compress=compress,
     )
-    if merge_output:
-        output = _write_csvs_merged(
-            var_csvs,
-            output_subdir,
-            Path(temp_dir.name),
-            ts_aggregate=ts_aggregate,
-            accum_vars=accum_vars,
-        )
-    else:
-        output = _write_csvs_split(
-            var_csvs,
-            output_subdir,
-            ts_aggregate=ts_aggregate,
-            accum_vars=accum_vars,
-        )
     temp_dir.cleanup()
-    return output
+    return var_csvs
 
 
-# TODO: Support glob style matching in addition to dsdir
-# implement scratch read from env or specify
-# implement ghaas_bin read from env or specify
+def sample_wbm_dsdir(
+    dsdir,
+    network,
+    samplers,
+    output_dir,
+    workers=1,
+    ts_aggregate=True,
+    outputs_only=True,
+    ghaas_bin=None,
+    scratch_dir=None,
+    variables=[],
+    accum_vars=["Runoff", "Precipitation"],
+    compress=False,
+    filters=[],
+):
+    return _sample_dir(
+        dsdir,
+        "ds",
+        network,
+        samplers,
+        output_dir,
+        workers=workers,
+        ts_aggregate=ts_aggregate,
+        outputs_only=outputs_only,
+        ghaas_bin=ghaas_bin,
+        scratch_dir=scratch_dir,
+        variables=variables,
+        accum_vars=accum_vars,
+        compress=compress,
+        filters=filters,
+    )
+
+
+def sample_wbm_gdbcdir(
+    dsdir,
+    network,
+    samplers,
+    output_dir,
+    workers=1,
+    ts_aggregate=True,
+    outputs_only=False,
+    ghaas_bin=None,
+    scratch_dir=None,
+    variables=[],
+    accum_vars=["Runoff", "Precipitation"],
+    compress=False,
+    filters=[],
+):
+    return _sample_dir(
+        dsdir,
+        "gdbc",
+        network,
+        samplers,
+        output_dir,
+        workers=workers,
+        ts_aggregate=ts_aggregate,
+        outputs_only=outputs_only,
+        ghaas_bin=ghaas_bin,
+        scratch_dir=scratch_dir,
+        variables=variables,
+        accum_vars=accum_vars,
+        compress=compress,
+        filters=filters,
+    )
+
+
 @click.command()
 @click.argument(
-    "ds_dir",
+    "directory",
     type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
 )
 @click.option(
@@ -861,10 +899,13 @@ def sample_wbm_dsdir(
     multiple=True,
 )
 @click.option(
-    "-r",
-    "--resolution",
+    "-f",
+    "--filter",
     type=click.STRING,
-)  # TODO: infer option for res
+    multiple=True,
+    default=[],
+    help="File name must contain filter str (case insenstive)",
+)
 @click.option(
     "-n",
     "--network",
@@ -889,33 +930,57 @@ def sample_wbm_dsdir(
     help="Create monthly and annual results from daily",
 )
 @click.option(
-    "-m",
-    "--merge",
+    "-z",
+    "--gzipped",
     is_flag=True,
     default=False,
     show_default=True,
-    help="Merge outputs into single csv",
+    help="compress csvs with gzip",
+)
+@click.option(
+    "-g",
+    "--gdbc",
+    is_flag=True,
+    default=False,
+    show_default=True,
+    help="Directory contains gdbc, not datastreams",
 )
 def wbm_sample(
-    ds_dir,
+    directory,
     outputdirectory,
     variable,
     sampler,
-    resolution,
+    filter,
     network,
     workers,
     accum_var,
     aggregatetime,
-    merge,
+    gzipped,
+    gdbc,
 ):
-    sample_wbm_dsdir(
-        ds_dir,
-        network,
-        sampler,
-        outputdirectory,
-        workers=workers,
-        variables=variable,
-        accum_vars=accum_var,
-        ts_aggregate=aggregatetime,
-        merge_output=merge,
-    )
+    if not gdbc:
+        sample_wbm_dsdir(
+            directory,
+            network,
+            sampler,
+            outputdirectory,
+            workers=workers,
+            variables=variable,
+            accum_vars=accum_var,
+            ts_aggregate=aggregatetime,
+            compress=gzipped,
+            filters=filter,
+        )
+    else:
+        sample_wbm_gdbcdir(
+            directory,
+            network,
+            sampler,
+            outputdirectory,
+            workers=workers,
+            variables=variable,
+            accum_vars=accum_var,
+            ts_aggregate=aggregatetime,
+            compress=gzipped,
+            filters=filter,
+        )

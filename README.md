@@ -1,9 +1,17 @@
 # rgispy
 
 ## Installation
-python 3.9 required
+python >= 3.9 required
 
-The easiest way to get going is with conda. Nobody wants to fuss about with GDAL. 
+[RGIS](https://github.com/bmfekete/RGIS) required
+
+```sh
+git clone https://github.com/bmfekete/RGIS /tmp/RGIS \
+ && /tmp/RGIS/install.sh /usr/local/share \
+ && rm -rf /tmp/RGIS
+```
+
+The easiest way to get going is with conda to circumvent any gdal dependency issues. 
 
 ```sh
 
@@ -13,13 +21,13 @@ pip install git+https://github.com/dvignoles/rgispy@main
 ```
 
 ## Developer Setup
-```sh
-# Setup up base environment like above
+To develop this code base further, first set up installation as described above. Then install the developer dependencies which enfore code quality and formatting. 
 
+```sh
+# Install rgispy in edittable mode
 pip install -e .
 # Install dependencies
 pip install -r requirements.dev
-
 # Setup pre-commit and pre-push hooks
 pre-commit install -t pre-commit
 pre-commit install -t pre-push

@@ -26,6 +26,11 @@ def _join_dbcells(
     assert (
         df.index.name == cellid_field or cellid_field in df.columns
     ), f"{cellid_field} must be in df"
+
+    # ensure cellid is integer for join
+    df = df.reset_index()
+    df.loc[:, cellid_field] = df[cellid_field].astype(int)
+
     if not isinstance(network, RgisNetwork):
         network = RgisNetwork(network, ghaas_bin=ghaas_bin, scratch_dir=scratch_dir)
 
@@ -98,6 +103,13 @@ def dbcells_to_grid(
     return output_grid
 
 
+def _assert_cellid_unq(df, col):
+    if df.index.name == col:
+        assert df.index.is_unique, "CellID must be unique in dataframe"
+    else:
+        assert df[col].is_unique, "CellID must be unique in dataframe"
+
+
 def cellattr_to_grid(
     df,
     col,
@@ -125,6 +137,9 @@ def cellattr_to_grid(
     Returns:
         output: output gdbc[.gz] grid
     """
+
+    _assert_cellid_unq(df, cellid_field)
+
     if not isinstance(network, RgisNetwork):
         network = RgisNetwork(network, ghaas_bin=ghaas_bin, scratch_dir=scratch_dir)
 

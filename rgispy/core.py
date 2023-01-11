@@ -942,7 +942,7 @@ class RgisDataStream(RgisFile):
             yield dt, data
 
     def dsAggregate(self, step, out_ds, aggregate="avg"):
-        aggs = ["aggregate", "sum"]
+        aggs = ["avg", "sum"]
         steps = ["day", "month", "year"]
         assert aggregate.lower() in aggs, f"aggregate must be on of {aggs}"
         assert step.lower() in steps, f"aggregate must be on of {steps}"
@@ -952,6 +952,7 @@ class RgisDataStream(RgisFile):
             ("--aggregate", aggregate),
         ]
 
+        self._to_buffer()
         self.run_rgiscmd("dsAggregate", self._fref, foutput=out_ds, flags=flags)
         return RgisDataStream(
             out_ds, ghaas_bin=self.ghaas_bin, scratch_dir=self.scratch_dir

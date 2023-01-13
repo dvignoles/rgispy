@@ -132,3 +132,6 @@ dmypy.json
 # vscode
 .vscode/
 rgispy/rgispy.code-workspace
+
+# temporary demo outputs
+tmp_output/

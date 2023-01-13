@@ -805,15 +805,24 @@ class RgisPoint(RgisLayer, DBItemsMixin):
             for c in CHAR_FIELDS:
                 self.tbl_redef_field(c, f"{c}{suffix}")
 
-    def pnt_stn_coord(self, network, field, tolerance, radius, cfield="SubbasinArea"):
+    def pnt_stn_coord(
+        self, network, field=None, tolerance=None, radius=None, cfield="SubbasinArea"
+    ):
         flags = [
             ("-M", "fixed"),
-            ("--tolerance", tolerance),
-            ("--radius", radius),
-            ("--field", field),
             ("-c", cfield),
             ("--network", network),
         ]
+
+        if field is not None:
+            flags.append(("--field", field))
+
+        if tolerance is not None:
+            flags.append(("--tolerance", tolerance))
+
+        if radius is not None:
+            flags.append(("--radius", radius))
+
         new_rf = self.run_rgiscmd("pntSTNCoord", self._fref, flags=flags)
         self.set_fref(new_rf)
 
